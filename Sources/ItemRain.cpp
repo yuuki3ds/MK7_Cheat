@@ -114,6 +114,19 @@ namespace CTRPluginFramework
             float *c = (float *)(col + 0x40);
             c[0] = x; c[1] = y; c[2] = z;
         }
+
+        // カートとの当たり判定に使われる球（行列の平行移動と中心。高さは見た目より17低い）
+        u32 hit = *(u32 *)(box + 0x260);
+        if (ValidPtr(hit))
+        {
+            float *m = (float *)hit;
+            m[5]  = x;          // +0x14
+            m[9]  = y - 17.0f;  // +0x24
+            m[13] = z;          // +0x34
+            m[24] = x;          // +0x60
+            m[25] = y - 17.0f;  // +0x64
+            m[26] = z;          // +0x68
+        }
     }
 
     static void UpdateBoxes(u32 objDir)
@@ -361,6 +374,8 @@ namespace CTRPluginFramework
             "少なめ（約1個/秒）", "ふつう（約2個/秒）", "多め（約5個/秒）", "大量（約10個/秒）"
         };
         static const u32 amountVals[] = { 481, 241, 97, 49 };
+        static const char *heightNames[] = { "低い（60）", "ふつう（120）", "高い（240）" };
+        static const float heightVals[] = { 60.0f, 120.0f, 240.0f };
 
         for (;;)
         {
@@ -370,7 +385,11 @@ namespace CTRPluginFramework
 
             const std::string amountLabel = std::string("降る量：") + amountNames[g_amountSel];
             const std::string switchLabel = "アイテムスイッチ：" + std::to_string(onCount) + "種類ON";
-            Keyboard top("アイテムレインの設定", { amountLabel, switchLabel, "もどる" });
+            int hSel = 1;
+            for (int i = 0; i < 3; i++)
+                if (g_height == heightVals[i]) hSel = i;
+            const std::string heightLabel = std::string("高さ：") + heightNames[hSel];
+            Keyboard top("アイテムレインの設定", { amountLabel, switchLabel, heightLabel, "もどる" });
             int c = top.Open();
             if (c == 0)
             {
@@ -413,6 +432,15 @@ namespace CTRPluginFramework
                     sel = s;
                 }
                 RebuildTable();
+            }
+            else if (c == 2)
+            {
+                std::vector<std::string> opts;
+                for (int i = 0; i < 3; i++)
+                    opts.push_back(std::string(i == hSel ? "● " : "　") + heightNames[i]);
+                Keyboard kb("降らせる高さ", opts);
+                int s = kb.Open();
+                if (s >= 0 && s < 3) g_height = heightVals[s];
             }
             else
                 break;
