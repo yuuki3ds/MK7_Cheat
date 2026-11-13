@@ -12,9 +12,11 @@
 #include <3ds.h>
 #include <CTRPluginFramework.hpp>
 #include <cstdio>
+#include <ctime>
 #include <string>
 #include <vector>
 #include "ItemRain.hpp"
+#include "CTRPluginFrameworkImpl/Graphics/Renderer.hpp"   // 上画面の枠の描画に使う (CTRPF 内部)
 
 namespace CTRPluginFramework
 {
@@ -1241,9 +1243,6 @@ namespace CTRPluginFramework
                                              "ボードを出したりしまったりできます");
             board->Hotkeys += Hotkey(Key::Y, "ボードを起動");
             *race += board;
-            *race += new MenuEntry(Col(0xFFCD00, "ポイント換算即終了"), ResultPointSkip,
-                                   "リザルト画面のポイントのカウントアップを\n"
-                                   "1フレームで終わらせ、すぐ次の演出に進みます");
         }
         menu += race;
 
@@ -1264,19 +1263,16 @@ namespace CTRPluginFramework
                                           "他の人が拾えます。順位はコインの枚数で決まります\n"
                                           "レースに入る前に有効にしてください" + exclusive);
             *custom += g_entCoinRace;
+            *custom += new MenuEntry(Col(0xFFCD00, "ポイント換算即終了"), ResultPointSkip,
+                                   "リザルト画面のポイントのカウントアップを\n"
+                                   "1フレームで終わらせ、すぐ次の演出に進みます");
             *custom += new MenuEntry(Col(0x01FF8F, "アイテムレイン"), ItemRain, ItemRainSettings,
                                      "各カートの前方上空からアイテムを降らせます\n"
                                      "キーボードアイコンから降る量とアイテムスイッチを設定");
-            MenuEntry *drop = new MenuEntry(Col(0x01FF8F, "アイテムドロップ"), ItemDropKey,
-                                            std::string("自分のカートのすぐ前にアイテムを1つずつ落とします\n")
-                                            + Col(0xFFE100, BTN_LEFT " コイン") + "\n"
-                                            + Col(0xFF8F01, BTN_RIGHT " アイテムボックス") + "\n"
-                                            + Col(0xF2F101, BTN_UP " バナナ") + "\n"
-                                            + "ボタンはホットキーのアイコンから変更できます");
-            drop->Hotkeys += Hotkey(Key::DPadLeft,  "コインを落とす");
-            drop->Hotkeys += Hotkey(Key::DPadRight, "アイテムボックスを落とす");
-            drop->Hotkeys += Hotkey(Key::DPadUp,    "バナナを落とす");
-            *custom += drop;
+            *custom += new MenuEntry(Col(0xFFCD00, "CTGP-7式ライブリプレイ"), LiveReplay,
+                                     std::string("リプレイ再生前に有効にすること。\n"
+                                                 "アングルをプレイアングルとリプレイアングルに切り替えます。\n")
+                                     + Col(0xFFCD00, BTN_X " 切替"));
             menu += custom;
 
             // メニュー (日本版のみ)
@@ -1289,6 +1285,8 @@ namespace CTRPluginFramework
                                          "レース外のとき、メニュー全体を速く動かします\n"
                                          "ボタン・キャラ・画面切り替え・フェードがすべて速くなります\n"
                                          "キーボードアイコンから速度を選べます");
+            *menuFolder += new MenuEntry(Col(0xFF7700, "ポーズ制限解除"), PauseUnlock,
+                                     "カウントダウン時、ゴール直後にもポーズメニューを開けるようにします");
             menu += menuFolder;
         }
 
@@ -1339,15 +1337,6 @@ namespace CTRPluginFramework
         g_entRearView = new MenuEntry(Col(0x01C7FF, "バックミラー"), RearView,
                                  Col(0x01F214, BTN_LEFT));
         *player += g_entRearView;
-        if (jp)
-        {
-            *player += new MenuEntry(Col(0xFFCD00, "CTGP-7式ライブリプレイ"), LiveReplay,
-                                     std::string("リプレイ再生前に有効にすること。\n"
-                                                 "アングルをプレイアングルとリプレイアングルに切り替えます。\n")
-                                     + Col(0xFFCD00, BTN_X " 切替"));
-            *player += new MenuEntry(Col(0xFF7700, "ポーズ制限解除"), PauseUnlock,
-                                     "カウントダウン時、ゴール直後にもポーズメニューを開けるようにします");
-        }
         menu += player;
 
         if (!jp) return;  // 以下は日本版のみ
@@ -1465,6 +1454,105 @@ namespace CTRPluginFramework
     }
 
     // ---------------------------------------------------------------
+    //  上画面の枠: メニューを開いている間、上画面の上下 (メニューの窓の外) に帯を描く
+    //   上の帯: 日付・時刻・バッテリー残量 / 下の帯: フレンドコード
+    // ---------------------------------------------------------------
+    static std::string g_friendCode;     // "1234-5678-9012" (取得できなければ空)
+    static bool        g_fcTried = false;
+    static bool        g_mcuOk   = false;
+    static bool        g_ptmOk   = false;
+
+    static void InitStatusBar(void)
+    {
+        g_mcuOk = R_SUCCEEDED(mcuHwcInit());   // バッテリー% (使えないときは ptm の5段階)
+        g_ptmOk = R_SUCCEEDED(ptmuInit());
+    }
+
+    static void LoadFriendCode(void)
+    {
+        if (g_fcTried) return;
+        g_fcTried = true;
+        if (R_FAILED(frdInit(true))) return;
+        FriendKey key;
+        u64 fc = 0;
+        if (R_SUCCEEDED(FRD_GetMyFriendKey(&key))
+            && R_SUCCEEDED(FRD_PrincipalIdToFriendCode(key.principalId, &fc)) && fc != 0)
+        {
+            char buf[20];
+            const u32 a = (u32)(fc / 100000000ULL), b = (u32)((fc / 10000ULL) % 10000ULL), c = (u32)(fc % 10000ULL);
+            snprintf(buf, sizeof(buf), "%04lu-%04lu-%04lu", (unsigned long)a, (unsigned long)b, (unsigned long)c);
+            g_friendCode = buf;
+        }
+        frdExit();
+    }
+
+    static std::string BatteryText(void)
+    {
+        static Clock clock;
+        static std::string text;
+        if (!text.empty() && clock.GetElapsedTime().AsSeconds() < 2.f)
+            return text;              // 2秒ごとに更新
+        clock.Restart();
+
+        u8 charging = 0;
+        if (g_ptmOk) PTMU_GetBatteryChargeState(&charging);
+        char buf[32];
+        u8 level = 0;
+        if (g_mcuOk && R_SUCCEEDED(MCUHWC_GetBatteryLevel(&level)))
+            snprintf(buf, sizeof(buf), "%u%%", level > 100 ? 100 : level);
+        else if (g_ptmOk && R_SUCCEEDED(PTMU_GetBatteryLevel(&level)))
+            snprintf(buf, sizeof(buf), "%u/5", level > 5 ? 5 : level);
+        else
+            snprintf(buf, sizeof(buf), "--");
+        text = std::string("バッテリー ") + buf + (charging ? " 充電中" : "");
+        return text;
+    }
+
+    static void DrawStatusBar(Time)
+    {
+        static const int kBarH = 20;          // メニューの窓は y=20～220 なので、その外側に描く
+        FwkSettings &st = FwkSettings::Get();
+        const Color &bg  = st.BackgroundMainColor;
+        const Color &bd  = st.BackgroundBorderColor;
+        const Color &txt = st.MainTextColor;
+
+        Renderer::SetTarget(TOP);
+        Renderer::DrawRect(0, 0, 400, kBarH, bg);
+        Renderer::DrawRect(0, kBarH - 1, 400, 1, bd);
+        Renderer::DrawRect(0, 240 - kBarH, 400, kBarH, bg);
+        Renderer::DrawRect(0, 240 - kBarH, 400, 1, bd);
+
+        // 日付・時刻 (3DS の時計は現地時刻)
+        static const char *kWeek[] = { "日", "月", "火", "水", "木", "金", "土" };
+        time_t now = time(nullptr);
+        struct tm tmv;
+        gmtime_r(&now, &tmv);
+        char date[48];
+        snprintf(date, sizeof(date), "%04d/%02d/%02d(%s) %02d:%02d:%02d",
+                 tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday, kWeek[tmv.tm_wday % 7],
+                 tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+        int y = 2;
+        Renderer::DrawSysString(date, 6, y, 400, txt);
+
+        const std::string bat = BatteryText();
+        y = 2;
+        int bx = 394 - (int)Renderer::GetTextSize(bat.c_str());
+        Renderer::DrawSysString(bat.c_str(), bx, y, 400, txt);
+
+        // フレンドコード
+        const std::string fc = "フレンドコード  " + (g_friendCode.empty() ? std::string("取得できません") : g_friendCode);
+        y = 240 - kBarH + 2;
+        int fx = (400 - (int)Renderer::GetTextSize(fc.c_str())) / 2;
+        Renderer::DrawSysString(fc.c_str(), fx, y, 400, txt);
+    }
+
+    static bool OnMenuOpening(void)
+    {
+        LoadFriendCode();
+        return true;
+    }
+
+    // ---------------------------------------------------------------
     //  CTRPF 必須関数
     // ---------------------------------------------------------------
     void PatchProcess(FwkSettings &settings)
@@ -1488,6 +1576,9 @@ namespace CTRPluginFramework
                                 + "JPN / USA / EUR 自動対応 (現在: " + g_rg->name + ")";
         PluginMenu *menu = new PluginMenu(title, 0, 0, 1, about);
         menu->SynchronizeWithFrame(true);
+        InitStatusBar();
+        menu->OnOpening  = OnMenuOpening;   // フレンドコードを読む (初回のみ)
+        menu->OnNewFrame = DrawStatusBar;   // 上画面の上下の枠
         InitMenu(*menu);
         AddPluginSettings(*menu);
         menu->Run();

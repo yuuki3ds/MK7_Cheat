@@ -2,7 +2,7 @@
 // アイテム／コイン／アイテムボックスを各カートの前方上空から降らせる。
 // ARコード版アイテムレイン（002D9668 のフック）とは同時に使えないので、AR版はOFFにすること。
 //
-// main.cpp のカスタムモードフォルダに「アイテムレイン」「アイテムドロップ」として登録済み (日本版のみ)。
+// main.cpp のカスタムモードフォルダに「アイテムレイン」として登録済み (日本版のみ)。
 // ソフト終了時は OnProcessExit から ItemRainShutdown() を呼び、フックを外す。
 
 #include <3ds.h>
@@ -54,8 +54,6 @@ namespace CTRPluginFramework
     // ---- 内部状態 ----
     static bool g_installed = false;
     static bool g_running   = false;   // レイン動作中
-    static u32  g_users     = 0;       // bit0=レイン, bit1=キードロップ
-    static volatile u8 g_dropReq = 0;  // キードロップの要求（0=なし, それ以外=種類+1）
     static u32  g_counter   = 0;
     static u32  g_rng       = 0x1234ABCD;
     static u8   g_table[32];
@@ -208,31 +206,6 @@ namespace CTRPluginFramework
 
         if (idx == 0 && objDir) UpdateBoxes(objDir);   // 1フレームに1回
 
-        // キードロップ：自分のカートのすぐ前に1個落とす
-        if (idx == 0 && g_dropReq)
-        {
-            u8 kind = g_dropReq - 1;
-            g_dropReq = 0;
-            const float *k = (const float *)kart;
-            float pos[3], vel[3] = { 0.0f, 0.0f, 0.0f };
-            pos[0] = k[9]  + k[6] * 80.0f;
-            pos[1] = k[10] + k[7] * 80.0f + 60.0f;
-            pos[2] = k[11] + k[8] * 80.0f;
-            if (kind == KIND_COIN)
-                SpawnCoin(kart, idx, pos);
-            else if (kind == KIND_BOX)
-                {
-                float bpos[3] = { k[9], k[10] + g_height, k[11] };
-                SpawnBox(objDir, Rand(), bpos, k[10] + g_boxFloat);
-            }
-            else if (ValidPtr(itemDir))
-            {
-                u32 mgr = ((u32 (*)(u32, u32))kFnGetItemMgr)(itemDir, kind);
-                if (ValidPtr(mgr))
-                    ((void (*)(u32, u32, float *, float *))kFnDropItem)(mgr, idx, pos, vel);
-            }
-        }
-
         if (!g_running || g_tableLen == 0 || g_interval == 0) return;
         if (++g_counter < g_interval) return;
         g_counter = 0;
@@ -323,47 +296,16 @@ namespace CTRPluginFramework
 
         if (!entry->IsActivated())
         {
-            g_running = false;
-            g_users &= ~1u;
-            if (!g_users) Uninstall();
+            Uninstall();
             return;
         }
-        g_users |= 1;
         if (!g_installed) Install();
         g_running = true;
-    }
-
-    // キーで1個ずつ落とす (ホットキー 0:コイン 1:アイテムボックス 2:バナナ、初期値 ← → ↑)
-    void ItemDropKey(MenuEntry *entry)
-    {
-        if (Process::GetTitleID() != 0x0004000000030600ULL) return;
-
-        static bool prev[3] = { false, false, false };
-        if (!entry->IsActivated())
-        {
-            g_users &= ~2u;
-            if (!g_users) Uninstall();
-            prev[0] = prev[1] = prev[2] = false;
-            return;
-        }
-        g_users |= 2;
-        if (!g_installed) Install();
-
-        static const u8 kinds[3] = { KIND_COIN, KIND_BOX, 0x00 };
-        for (int i = 0; i < 3; i++)
-        {
-            const bool down = entry->Hotkeys[i].IsDown();
-            if (down && !prev[i] && !g_dropReq)   // 押した瞬間だけ
-                g_dropReq = kinds[i] + 1;
-            prev[i] = down;
-        }
     }
 
     // ソフト終了時に呼ぶ (フックを元に戻す)
     void ItemRainShutdown(void)
     {
-        g_users = 0;
-        g_dropReq = 0;
         Uninstall();
     }
 
