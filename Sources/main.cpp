@@ -1545,6 +1545,8 @@ namespace CTRPluginFramework
         Renderer::DrawSysString(fc.c_str(), fx, y, 400, txt);
     }
 
+    void RtMenuInit(PluginMenu &menu);   // RtMenu.cpp
+
     static bool OnMenuOpening(void)
     {
         LoadFriendCode();
@@ -1580,6 +1582,7 @@ namespace CTRPluginFramework
         menu->OnNewFrame = DrawStatusBar;   // 上画面の上下の枠
         InitMenu(*menu);
         AddPluginSettings(*menu);
+        RtMenuInit(*menu);                  // RT Menu (SELECT で下画面にチート一覧)
         menu->Run();
         // ソフト終了時のクラッシュ対策:
         // delete menu でフォルダを片付ける処理 (MenuFolderImpl → ~MenuFolder) が

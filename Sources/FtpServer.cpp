@@ -8,6 +8,7 @@
 #include <CTRPluginFramework.hpp>
 #include "CTRPluginFrameworkImpl/Graphics/Renderer.hpp"
 #include "CTRPluginFrameworkImpl/Graphics/Window.hpp"
+#include "csvc.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -35,6 +36,10 @@ namespace CTRPluginFramework
         const int  kTimeoutMs     = 15000;   // データ接続の待ち時間
         const int  kLogLines      = 9;
 
+        // socInit に渡すメモリはプロセスのヒープ領域 (0x08000000～0x10000000) にないと
+        // svcCreateMemoryBlock が E0A01BF5 (アドレス不正) になる。プラグインのメモリは 0x07000000 台なので、
+        // ヒープ領域の空いている所に svcControlMemoryUnsafe で確保する。
+        const u32   kSocBufAddrs[] = { 0x0F000000, 0x0E800000, 0x0E000000 };
         u32        *g_socBuf   = nullptr;
         u8         *g_xferBuf  = nullptr;
         FS_Archive  g_sdmc     = 0;
@@ -563,12 +568,32 @@ namespace CTRPluginFramework
             g_status = g_ctrl >= 0 ? "接続中: " + g_clientIp : "接続を待っています";
         }
 
+        u32 *AllocSocBuf(void)
+        {
+            for (u32 addr : kSocBufAddrs)
+            {
+                u32 out = 0;
+                if (R_SUCCEEDED(svcControlMemoryUnsafe(&out, addr, kSocBufSize,
+                        (MemOp)(MEMOP_ALLOC | MEMOP_REGION_SYSTEM), (MemPerm)(MEMPERM_READ | MEMPERM_WRITE))))
+                    return (u32 *)addr;
+            }
+            return nullptr;
+        }
+
+        void FreeSocBuf(void)
+        {
+            if (!g_socBuf) return;
+            u32 out = 0;
+            svcControlMemoryUnsafe(&out, (u32)g_socBuf, kSocBufSize, MEMOP_FREE, (MemPerm)0);
+            g_socBuf = nullptr;
+        }
+
         void Shutdown(void)
         {
             CloseSock(g_pasv);
             CloseSock(g_ctrl);
             CloseSock(g_listen);
-            if (g_socBuf) { socExit(); free(g_socBuf); g_socBuf = nullptr; }
+            if (g_socBuf) { socExit(); FreeSocBuf(); }
             if (g_xferBuf) { free(g_xferBuf); g_xferBuf = nullptr; }
             if (g_sdmc) { FSUSER_CloseArchive(g_sdmc); g_sdmc = 0; }
         }
@@ -578,17 +603,17 @@ namespace CTRPluginFramework
             char buf[64];
             g_log.clear();
             g_xferBuf = (u8 *)malloc(kXferBufSize);
-            g_socBuf  = (u32 *)memalign(0x1000, kSocBufSize);
+            g_socBuf  = AllocSocBuf();
             if (!g_xferBuf || !g_socBuf)
             {
-                free(g_socBuf); g_socBuf = nullptr;
+                FreeSocBuf();
                 err = "メモリが足りません";
                 return false;
             }
             Result r = socInit(g_socBuf, kSocBufSize);
             if (R_FAILED(r))
             {
-                free(g_socBuf); g_socBuf = nullptr;
+                FreeSocBuf();
                 snprintf(buf, sizeof(buf), "通信の初期化に失敗しました (%08lX)", (unsigned long)r);
                 err = buf;
                 return false;

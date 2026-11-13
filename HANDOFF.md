@@ -36,6 +36,7 @@
 | `ctrpf-patch/KeyboardImpl.cpp` / `.hpp` | 日本語キーボード入りに改造した CTRPF の内部ファイル |
 | `ctrpf-patch/patch-home.sh` | CTRPF の PluginMenuHome.cpp を sed で書き換え、下画面の「Mapper」ボタンを「FTP Server」にする（Actions で実行） |
 | `Sources/FtpServer.cpp` | FTP サーバー本体（`FtpServerMenu()`、CTRPF からは弱いシンボルで呼ばれる） |
+| `Sources/RtMenu.cpp` | RT Menu（`RtMenuOpen()` / `RtMenuInit()`）。ゲームを止めずに下画面のチート一覧で ON/OFF |
 | `tools/skk2ctrpf.py` | SKK 辞書を `skk_jisyo.dic` に変換（SD の `/luma/plugins/` に置く） |
 | `.github/workflows/build.yml` | GitHub Actions でのビルド |
 | `Makefile`、`.plgInfo` | テンプレート（CTRPluginFramework-BlankTemplate）のもの |
@@ -68,7 +69,8 @@
 
 `*` = チェックを外すと OFF 値を書き戻すエントリ（`ApplyToggle` / `ApplyToggleOrdered`）。
 
-- **FTP Server**（CTRPF 下画面メニュー、全版）：ポート 5000、PASV/EPSV/PORT、ユーザー名・パスワードは何でも可、SD 全体を公開。メニュー内で動き B で停止。開始時に socInit、停止時に socExit（ゲームの通信と重ならないよう、メニュー中だけ使う）
+- **FTP Server**（CTRPF 下画面メニュー、全版）：ポート 5000、PASV/EPSV/PORT、ユーザー名・パスワードは何でも可、SD 全体を公開。メニュー内で動き B で停止。開始時に socInit、停止時に socExit（ゲームの通信と重ならないよう、メニュー中だけ使う）。socInit のメモリはヒープ領域（0x0F000000 など）に svcControlMemoryUnsafe で確保する（プラグインのメモリだと E0A01BF5）
+- **RT Menu**（CTRPF 下画面メニューの Game Guide を置き換え、全版）：SELECT でいつでも開閉、十字キー・A・B で操作。OSD で下画面に描画。設定画面（ギア・キーボード）は開けず ON/OFF のみ。**開いている間もゲームにボタン入力が届く（未対応）**
 
 ## 6. 空き領域と排他（新しいコードを足す前に必ず確認）
 
