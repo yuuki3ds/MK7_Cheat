@@ -751,10 +751,61 @@ namespace CTRPluginFramework
         static const Toggle t[] = {
             { 0x00419E1C, 0x0A00004B, 0x15901168 },
             { 0x0041F82C, 0xE320F000, 0x1A00001E },
-            CUSTOM_RACE_COMMON(0xE1D012B6, 0xE1D122B6),
+            CUSTOM_RACE_COMMON(0xE1D012B4, 0xE1D122B4),   // 本家と同じスコア表示
         };
         ApplyToggleOrdered(e, t);
     }
+
+    // コインレース: コイン枚数で順位を決める (順位計算 0x464574 の中身を置き換え、47行)
+    static const Toggle kCoinRank[] = {
+            { 0x0046457C, 0xE590C1E4, 0xE2807C01 },
+            { 0x00464580, 0xE6FFC07C, 0xE59021E4 },
+            { 0x00464584, 0xE35C0008, 0xE5D014E7 },
+            { 0x00464588, 0x83A0C008, 0xE28770FD },
+            { 0x0046458C, 0xE59F10A0, 0xE3A03000 },
+            { 0x00464590, 0xE5911000, 0xE6FFC072 },
+            { 0x00464594, 0xE3510000, 0xE3510000 },
+            { 0x00464598, 0x0A000022, 0xDA000010 },
+            { 0x0046459C, 0xE2811D2F, 0xE0801083 },
+            { 0x004645A0, 0xE2802F7D, 0xE2811B01 },
+            { 0x004645A4, 0xE3A03000, 0xE2834001 },
+            { 0x004645A8, 0xE0634183, 0xE1D11EF8 },
+            { 0x004645AC, 0xE0814204, 0xE1A02007 },
+            { 0x004645B0, 0xE1D440B2, 0xE20440FF },
+            { 0x004645B4, 0xE0825003, 0xE3510008 },
+            { 0x004645B8, 0xE5D55009, 0x30872001 },
+            { 0x004645BC, 0xE3A06001, 0xE3540009 },
+            { 0x004645C0, 0xE3A07000, 0xE5C24000 },
+            { 0x004645C4, 0xE0678187, 0xE2802F7D },
+            { 0x004645C8, 0xE0818208, 0x30822004 },
+            { 0x004645CC, 0xE1D880B2, 0xE2833001 },
+            { 0x004645D0, 0xE0829007, 0xE5C21000 },
+            { 0x004645D4, 0xE5D99009, 0xE5D014E7 },
+            { 0x004645D8, 0xE1580004, 0xE1510003 },
+            { 0x004645DC, 0x82866001, 0xCAFFFFEE },
+            { 0x004645E0, 0x1A000001, 0xE5D01028 },
+            { 0x004645E4, 0xE1590005, 0xE3510000 },
+            { 0x004645E8, 0x32866001, 0xE3A01000 },
+            { 0x004645EC, 0xE2877001, 0xDA00000F },
+            { 0x004645F0, 0xE157000C, 0xE0802081 },
+            { 0x004645F4, 0x3AFFFFF2, 0xE04C4001 },
+            { 0x004645F8, 0xE7CD6003, 0xE1D222FA },
+            { 0x004645FC, 0xE2833001, 0xE20440FF },
+            { 0x00464600, 0xE153000C, 0xE2811001 },
+            { 0x00464604, 0x3AFFFFE7, 0xE3520008 },
+            { 0x00464608, 0xE3A03000, 0x30875002 },
+            { 0x0046460C, 0xE7DD6003, 0x21A05007 },
+            { 0x00464610, 0xE0825003, 0xE3540009 },
+            { 0x00464614, 0xE5C56009, 0xE5C54000 },
+            { 0x00464618, 0xE7C23006, 0xE2805F7D },
+            { 0x0046461C, 0xE2833001, 0x30855004 },
+            { 0x00464620, 0xE153000C, 0xE5C52000 },
+            { 0x00464624, 0x3AFFFFF8, 0xE5D02028 },
+            { 0x00464628, 0xE28DD008, 0xE1520001 },
+            { 0x0046462C, 0xE8BD03F0, 0xCAFFFFEF },
+            { 0x00464630, 0xE12FFF1E, 0xE5D02028 },
+            { 0x00464634, 0x0065C528, 0xE5D014E7 }
+    };
 
     static void CoinRace(MenuEntry *e)
     {
@@ -767,6 +818,88 @@ namespace CTRPluginFramework
             CUSTOM_RACE_COMMON(0xE1D011B6, 0xE1D121B6),
         };
         ApplyToggleOrdered(e, t);
+        ApplyToggle(e, kCoinRank);   // 順位計算の置き換え (普通のレースでは必ずOFFになるよう一緒に戻す)
+    }
+
+    // ---------------------------------------------------------------
+    //  メニュー (日本版のみ)
+    // ---------------------------------------------------------------
+    static MenuEntry *g_entMenuCut = nullptr;
+
+    // メニュー高速化 (メニューカット まとめ版)。空き領域 0x5EBD9C〜0x5EBDD0 を使う
+    static void MenuSpeedup(MenuEntry *e)
+    {
+        if (e->WasJustActivated()) DisableIfOn(g_entTimeStop);
+        static const Toggle t[] = {
+            // 空き領域 (先に書く)
+            { 0x005EBD9C, 0xE5940000, 0 }, { 0x005EBDA0, 0xE59010D8, 0 },
+            { 0x005EBDA4, 0xE59F2020, 0 }, { 0x005EBDA8, 0xE1510002, 0 },
+            { 0x005EBDAC, 0x159F201C, 0 }, { 0x005EBDB0, 0x11510002, 0 },
+            { 0x005EBDB4, 0x0AFB8F88, 0 }, { 0x005EBDB8, 0xE1A00004, 0 },
+            { 0x005EBDBC, 0xE12FFF31, 0 }, { 0x005EBDC0, 0xE3500000, 0 },
+            { 0x005EBDC4, 0x0AFB8F52, 0 }, { 0x005EBDC8, 0xEAFB8F83, 0 },
+            { 0x005EBDCC, 0x00472C04, 0 }, { 0x005EBDD0, 0x0049B314, 0 },
+            // 本体
+            { 0x004CFAFC, 0xA3E00000, 0xA2400001 },
+            { 0x004CFB64, 0xE320F000, 0x0AFFFFEA },
+            { 0x004CFBC0, 0xE320F000, 0x0AFFFFD3 },
+            { 0x004D38D8, 0x8A000003, 0x1A000003 },
+            { 0x004D38F0, 0xE2810001, 0xE2800001 },
+            { 0x004815B0, 0xE1500000, 0xE1510000 },
+            { 0x004815F4, 0xEEF00A40, 0xEE700AC1 },
+            { 0x00481658, 0xEEF00A40, 0xEE700A81 },
+            { 0x004DC5F0, 0xE3A02001, 0xE584100C },
+            { 0x004DC5F4, 0xE584200C, 0xE3A02001 },
+            { 0x004DC654, 0xE3A02003, 0xE580100C },
+            { 0x004DC658, 0xE580200C, 0xE3A02003 },
+            { 0x00401E54, 0xE3A06000, 0xE3A06001 },
+            // 空き領域へ飛ぶ分岐 (最後に書き、最初に戻す)
+            { 0x004CFBC4, 0xEA047074, 0xE5940000 },
+        };
+        ApplyToggleOrdered(e, t);
+    }
+
+    // メニュー速度変更: レース外のときシーン更新の回数 ([[0x6789BC]+4]+0x304) を増やす
+    static u32 g_menuSpeed = 4;
+    static bool GetSceneSpeedAddr(u32 &out)
+    {
+        u32 p = 0;
+        if (!Process::Read32(0x006789BC, p) || p == 0) return false;
+        if (!Process::Read32(p + 4, p) || p == 0) return false;
+        out = p + 0x304;
+        return true;
+    }
+
+    static void MenuSpeed(MenuEntry *e)
+    {
+        u32 race = 0, addr = 0;
+        Process::Read32(0x0065C528, race);
+        if (!GetSceneSpeedAddr(addr)) return;
+
+        if (!e->IsActivated())
+        {
+            if (race == 0) W32(addr, 1);              // OFF: 通常の 1 に戻す
+            return;
+        }
+        if (race == 0)
+            W32(addr, g_menuSpeed);                   // レース外: 倍速
+        else if (R32(addr) == g_menuSpeed)
+            W32(addr, 1);                             // レースに入ったら 1 に戻す
+    }
+
+    static void MenuSpeedMenu(MenuEntry *e)
+    {
+        static const u32 speeds[] = { 2, 3, 4, 6, 8 };
+        std::vector<std::string> opts;
+        for (u32 v : speeds)
+            opts.push_back(std::string(v == g_menuSpeed ? "\u25CF " : "\u3000") + std::to_string(v) + "倍速");
+        Keyboard kb("メニューの速度\n(16倍はゲームの早送りと同じ値なので選べません)", opts);
+        int idx = kb.Open();
+        if (idx >= 0)
+        {
+            g_menuSpeed = speeds[idx];
+            e->Name() = Col(0x007AFF, "メニュー速度変更 (" + std::to_string(g_menuSpeed) + "倍速)");
+        }
     }
 
     // リザルトのポイント換算を1フレームで終わらせる (日本版のみ)
@@ -1042,6 +1175,7 @@ namespace CTRPluginFramework
             DisableIfOn(g_entRearView);
             DisableIfOn(g_entBalloon);
             DisableIfOn(g_entCoinRace);
+            DisableIfOn(g_entMenuCut);
         }
 
         // 空き領域のコードを先に書いてからフックを張る
@@ -1127,7 +1261,7 @@ namespace CTRPluginFramework
             g_entCoinRace = new MenuEntry(Col(0xFFE701, "コインレース"), CoinRace,
                                           "GPレースにコインバトルのルールを追加します。\n"
                                           "頭の上にコインが表示され、被弾で落としたコインを\n"
-                                          "他の人が拾えます\n"
+                                          "他の人が拾えます。順位はコインの枚数で決まります\n"
                                           "レースに入る前に有効にしてください" + exclusive);
             *custom += g_entCoinRace;
             *custom += new MenuEntry(Col(0x01FF8F, "アイテムレイン"), ItemRain, ItemRainSettings,
@@ -1144,6 +1278,18 @@ namespace CTRPluginFramework
             drop->Hotkeys += Hotkey(Key::DPadUp,    "バナナを落とす");
             *custom += drop;
             menu += custom;
+
+            // メニュー (日本版のみ)
+            MenuFolder *menuFolder = new MenuFolder(Col(0x007AFF, "メニュー"));
+            g_entMenuCut = new MenuEntry(Col(0x007AFF, "メニュー高速化"), MenuSpeedup,
+                                         "メニューの完了待ち・選択肢の流れ・暗転・退場待ちをカットし、\n"
+                                         "cc選択の背景のマリオプレビューを消します");
+            *menuFolder += g_entMenuCut;
+            *menuFolder += new MenuEntry(Col(0x007AFF, "メニュー速度変更 (4倍速)"), MenuSpeed, MenuSpeedMenu,
+                                         "レース外のとき、メニュー全体を速く動かします\n"
+                                         "ボタン・キャラ・画面切り替え・フェードがすべて速くなります\n"
+                                         "キーボードアイコンから速度を選べます");
+            menu += menuFolder;
         }
 
         MenuFolder *player = new MenuFolder(Col(0x0186FF, "プレイヤー"));
@@ -1221,7 +1367,7 @@ namespace CTRPluginFramework
         MenuFolder *beta = new MenuFolder(Col(0xFF5C5F, "BETA"));
         g_entTimeStop = new MenuEntry(Col(0xFF5C5F, "自分以外の時間停止"), TimeStopBeta,
                                       Col(0xFF0104, "動作が不安定です") + "\n"
-                                      "GPタイマー・バックミラー・ふうせんレース・コインレースとは\n同時に使えません\n"
+                                      "GPタイマー・バックミラー・ふうせんレース・コインレース・\nメニュー高速化とは同時に使えません\n"
                                       "(ONにすると自動でOFFになります)");
         g_entTimeStop->Hotkeys += Hotkey(Key::Y, "停止 / 解除の切り替え");
         *beta += g_entTimeStop;
@@ -1345,7 +1491,10 @@ namespace CTRPluginFramework
         InitMenu(*menu);
         AddPluginSettings(*menu);
         menu->Run();
-        delete menu;
+        // ソフト終了時のクラッシュ対策:
+        // delete menu でフォルダを片付ける処理 (MenuFolderImpl → ~MenuFolder) が
+        // 壊れたポインタを読んで落ちるので、メニューは消さずにそのまま終了する。
+        // (プラグインのメモリはプロセス終了時にまとめて解放される)
         return 0;
     }
 }

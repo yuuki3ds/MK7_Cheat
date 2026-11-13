@@ -2,7 +2,7 @@
 // アイテム／コイン／アイテムボックスを各カートの前方上空から降らせる。
 // ARコード版アイテムレイン（002D9668 のフック）とは同時に使えないので、AR版はOFFにすること。
 //
-// main.cpp のレースフォルダに「アイテムレイン」「アイテムドロップ」として登録済み (日本版のみ)。
+// main.cpp のカスタムモードフォルダに「アイテムレイン」「アイテムドロップ」として登録済み (日本版のみ)。
 // ソフト終了時は OnProcessExit から ItemRainShutdown() を呼び、フックを外す。
 
 #include <3ds.h>
@@ -49,7 +49,7 @@ namespace CTRPluginFramework
     static u32   g_interval  = 241;     // カート更新の回数で数える（8台×60fps＝480/秒）。8で割って1余る値
     static float g_height    = 120.0f;  // 降らせる高さ
     static float g_fallSpeed = 3.0f;    // アイテムボックスの落下速度（1フレームあたり）
-    static float g_boxFloat  = 12.0f;   // ボックスが止まる高さ（カートの高さ＋この値）
+    static float g_boxFloat  = 15.0f;   // ボックスが止まる高さ（カートの高さ＋この値）
 
     // ---- 内部状態 ----
     static bool g_installed = false;
@@ -100,10 +100,20 @@ namespace CTRPluginFramework
     static void SetBoxPos(u32 box, float x, float y, float z)
     {
         float *p = (float *)(box + 0x48);    // 現在位置
-        float *h = (float *)(box + 0x1F8);   // 復活時の基準位置
+        float *q = (float *)(box + 0x54);    // 現在位置の写し
+        float *h = (float *)(box + 0x1F8);   // 復活時の基準位置（現在位置より15低い）
         p[0] = x; p[1] = y; p[2] = z;
-        h[0] = x; h[1] = y; h[2] = z;
+        q[0] = x; q[1] = y; q[2] = z;
+        h[0] = x; h[1] = y - 15.0f; h[2] = z;
         *(u32 *)(box + 0x6C) |= 1;           // 位置の更新要求
+
+        // 当たり判定（球）の中心も動かす
+        u32 col = *(u32 *)(box + 0x14);
+        if (ValidPtr(col))
+        {
+            float *c = (float *)(col + 0x40);
+            c[0] = x; c[1] = y; c[2] = z;
+        }
     }
 
     static void UpdateBoxes(u32 objDir)
@@ -198,7 +208,10 @@ namespace CTRPluginFramework
             if (kind == KIND_COIN)
                 SpawnCoin(kart, idx, pos);
             else if (kind == KIND_BOX)
-                SpawnBox(objDir, Rand(), pos, k[10] + k[7] * 80.0f + g_boxFloat);
+                {
+                float bpos[3] = { k[9], k[10] + g_height, k[11] };
+                SpawnBox(objDir, Rand(), bpos, k[10] + g_boxFloat);
+            }
             else if (ValidPtr(itemDir))
             {
                 u32 mgr = ((u32 (*)(u32, u32))kFnGetItemMgr)(itemDir, kind);
@@ -229,7 +242,10 @@ namespace CTRPluginFramework
         }
         else if (kind == KIND_BOX)
         {
-            SpawnBox(objDir, rnd, pos, k[10] + k[7] * d + g_boxFloat);
+            // ボックスは、いまカートがいる場所の真上から落とす（地面の高さが確実に分かるため）
+            float bl = (float)((rnd >> 9) & 0x7F) - 64.0f;
+            float bpos[3] = { k[9] + k[0] * bl, k[10] + g_height, k[11] + k[2] * bl };
+            SpawnBox(objDir, rnd, bpos, k[10] + g_boxFloat);
         }
         else
         {
@@ -360,7 +376,7 @@ namespace CTRPluginFramework
             {
                 std::vector<std::string> opts;
                 for (int i = 0; i < 4; i++)
-                    opts.push_back(std::string(i == g_amountSel ? "\u25CF " : "\u3000") + amountNames[i]);
+                    opts.push_back(std::string(i == g_amountSel ? "● " : "　") + amountNames[i]);
                 Keyboard kb("降る量", opts);
                 int s = kb.Open();
                 if (s >= 0 && s < 4)
