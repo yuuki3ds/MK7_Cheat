@@ -1,0 +1,55 @@
+# MK7_Cheat 3gx を GitHub Actions でビルドする
+#  - devkitPro 公式の Docker イメージ (devkitARM 入り) を使う
+#  - 日本語キーボード入りの CTRPF をソースからビルドして入れ替えてから、プラグインをビルドする
+#  - できた .3gx は Actions の「Artifacts」からダウンロードできる
+name: Build 3gx
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkitarm:latest
+    env:
+      # 動作確認できた CTRPF のコミットに固定するのがおすすめ
+      # (PC の ctrpf-dev フォルダで `git rev-parse HEAD` を実行すると分かる)
+      CTRPF_REF: develop
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: CTRPF と 3gxtool を入れる
+        run: |
+          cat >> /opt/devkitpro/pacman/etc/pacman.conf <<'CONF'
+
+          [thepixellizeross-lib]
+          Server = https://thepixellizeross.gitlab.io/packages/any
+          SigLevel = Optional
+
+          [thepixellizeross-linux]
+          Server = https://thepixellizeross.gitlab.io/packages/x86_64/linux
+          SigLevel = Optional
+          CONF
+          dkp-pacman -Sy --noconfirm libctrpf 3gxtool
+
+      - name: 日本語キーボード入りの CTRPF をビルドして入れ替える
+        run: |
+          git clone --recursive https://gitlab.com/thepixellizeross/ctrpluginframework.git /tmp/ctrpf
+          cd /tmp/ctrpf
+          git checkout "$CTRPF_REF"
+          git submodule update --init --recursive
+          cp "$GITHUB_WORKSPACE/ctrpf-patch/KeyboardImpl.cpp" Library/source/CTRPluginFrameworkImpl/Menu/
+          cp "$GITHUB_WORKSPACE/ctrpf-patch/KeyboardImpl.hpp" Library/include/CTRPluginFrameworkImpl/Menu/
+          sed -i 's/-Werror\([[:space:]]\|$\)/\1/g' Library/Makefile
+          make -C Library
+          cp Library/lib/libctrpf*.a "$DEVKITPRO/libctrpf/lib/"
+          cp -r Library/include/* "$DEVKITPRO/libctrpf/include/"
+
+      - name: プラグインをビルドする
+        run: make
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MK7_Cheat-3gx
+          path: "*.3gx"
