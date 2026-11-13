@@ -1254,7 +1254,6 @@ namespace CTRPluginFramework
             g_entBalloon = new MenuEntry(Col(0x001AFF, "ふうせんレース"), BalloonRace,
                                          "GPレースにふうせんバトルのルールを追加します。\n"
                                          "3つ割れるとコースアウト判定になります。\n"
-                                         "ポイントは関係ありません\n"
                                          "レースに入る前に有効にしてください" + exclusive);
             *custom += g_entBalloon;
             g_entCoinRace = new MenuEntry(Col(0xFFE701, "コインレース"), CoinRace,

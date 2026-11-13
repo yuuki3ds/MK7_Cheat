@@ -34,6 +34,8 @@
 | `Sources/main.cpp` | ほぼ全エントリとメニュー構築、カラーピッカー、Plugin設定 |
 | `Sources/ItemRain.cpp` / `Includes/ItemRain.hpp` | アイテムレイン（ユーザー作、こちらで設定画面などを追加。アイテムドロップは削除済み） |
 | `ctrpf-patch/KeyboardImpl.cpp` / `.hpp` | 日本語キーボード入りに改造した CTRPF の内部ファイル |
+| `ctrpf-patch/patch-home.sh` | CTRPF の PluginMenuHome.cpp を sed で書き換え、下画面の「Mapper」ボタンを「FTP Server」にする（Actions で実行） |
+| `Sources/FtpServer.cpp` | FTP サーバー本体（`FtpServerMenu()`、CTRPF からは弱いシンボルで呼ばれる） |
 | `tools/skk2ctrpf.py` | SKK 辞書を `skk_jisyo.dic` に変換（SD の `/luma/plugins/` に置く） |
 | `.github/workflows/build.yml` | GitHub Actions でのビルド |
 | `Makefile`、`.plgInfo` | テンプレート（CTRPluginFramework-BlankTemplate）のもの |
@@ -65,6 +67,8 @@
 - **上画面の枠**（全版）：メニュー表示中、上画面の上下 20 ドット（メニューの窓の外）に帯を描く。上：日付・時刻・バッテリー（mcu::HWC の %、使えなければ ptm の 5 段階）、下：フレンドコード（frd:u）。`PluginMenu::OnNewFrame` で CTRPF 内部の `Renderer` を使って描画
 
 `*` = チェックを外すと OFF 値を書き戻すエントリ（`ApplyToggle` / `ApplyToggleOrdered`）。
+
+- **FTP Server**（CTRPF 下画面メニュー、全版）：ポート 5000、PASV/EPSV/PORT、ユーザー名・パスワードは何でも可、SD 全体を公開。メニュー内で動き B で停止。開始時に socInit、停止時に socExit（ゲームの通信と重ならないよう、メニュー中だけ使う）
 
 ## 6. 空き領域と排他（新しいコードを足す前に必ず確認）
 

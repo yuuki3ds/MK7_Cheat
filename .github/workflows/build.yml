@@ -42,6 +42,7 @@ jobs:
           git submodule update --init --recursive
           cp "$GITHUB_WORKSPACE/ctrpf-patch/KeyboardImpl.cpp" Library/source/CTRPluginFrameworkImpl/Menu/
           cp "$GITHUB_WORKSPACE/ctrpf-patch/KeyboardImpl.hpp" Library/include/CTRPluginFrameworkImpl/Menu/
+          sh "$GITHUB_WORKSPACE/ctrpf-patch/patch-home.sh" /tmp/ctrpf
           sed -i 's/-Werror\([[:space:]]\|$\)/\1/g' Library/Makefile
           make -C Library
           cp Library/lib/libctrpf*.a "$DEVKITPRO/libctrpf/lib/"
