@@ -1,9 +1,11 @@
 // RT Menu: ゲームを止めずに、下画面に出したチート一覧でエントリを ON/OFF する
-//  - SELECT (いつでも) か、CTRPF 下画面メニューの「RT Menu」ボタンで開く / SELECT で閉じる
+//  - 開くボタン (初期値 SELECT) でいつでも開閉
 //  - 十字キー ↑↓ 選択、←→ ページ送り、A 決定 (フォルダを開く / ON・OFF)、B もどる (一番上なら閉じる)
-//  - 中身は上画面のメニューと同じ (PluginMenu のフォルダとエントリをそのまま使う)
-//  - ギア・キーボードアイコンの設定画面は開けない (ゲームが動いたままなので)。ON/OFF のみ
-//  - CTRPF 側の改造は ctrpf-patch/patch-home.sh (Game Guide ボタン → RT Menu)
+//  - 中身は上画面のメニューと同じ。ただし RT で使えない項目 (設定画面だけのエントリ) と、
+//    それしかないフォルダは出さない
+//  - CTRPF 下画面メニューの「RT Menu」ボタン (Game Guide を置き換え) で設定画面を開く
+//    (有効 / 無効、開くボタン)。設定は MK7_Cheat_rtmenu.bin に保存
+//  - CTRPF 側の改造は ctrpf-patch/patch-home.sh
 
 #include <3ds.h>
 #include <CTRPluginFramework.hpp>
@@ -15,47 +17,82 @@ namespace CTRPluginFramework
 {
     namespace
     {
-        const int kRows   = 10;        // 1ページの行数
-        const int kRowH   = 18;
-        const int kListY  = 24;
+        const int kRows  = 8;          // 1ページの行数
+        const int kRowH  = 16;
+        const int kHeadH = 18;
+        const int kW     = 320;
 
-        bool  g_built = false;
-        std::vector<MenuFolder *>                g_folders;
-        std::vector<std::vector<MenuEntry *>>    g_entries;
-        std::vector<MenuEntry *>                 g_rootEntries;   // フォルダに入っていないエントリ
+        struct OpenKey { const char *name; u32 keys; };
+        const OpenKey kOpenKeys[] = {
+            { "SELECT",          Key::Select },
+            { "L + SELECT",      Key::L | Key::Select },
+            { "R + SELECT",      Key::R | Key::Select },
+            { "Y + SELECT",      Key::Y | Key::Select },
+            { "L + R",           Key::L | Key::R },
+            { "L + R + SELECT",  Key::L | Key::R | Key::Select },
+        };
+        const int kOpenKeyCount = sizeof(kOpenKeys) / sizeof(kOpenKeys[0]);
+        const char *kSavePath = "MK7_Cheat_rtmenu.bin";
+
+        bool  g_enabled = true;
+        int   g_keySel  = 0;
+
+        // 表示する項目 (Build で作る)
+        struct Folder { std::string label; std::vector<MenuEntry *> entries; };
+        bool                g_built = false;
+        std::vector<Folder> g_folders;
 
         volatile bool g_open = false;
-        int   g_folder  = -1;          // -1 = 一番上
+        int   g_folder  = -1;          // -1 = 一番上 (フォルダ一覧)
         int   g_sel     = 0;
         int   g_rootSel = 0;
         int   g_scroll  = 0;
         u32   g_holdFrames = 0;
+
+        void Save(void)
+        {
+            File f;
+            if (File::Open(f, kSavePath, File::RWC | File::TRUNCATE) != 0) return;
+            u32 data[3] = { 0x544D5452 /* "RTMT" */, (u32)g_enabled, (u32)g_keySel };
+            f.Write(data, sizeof(data));
+            f.Close();
+        }
+
+        void Load(void)
+        {
+            File f;
+            if (File::Open(f, kSavePath, File::READ) != 0) return;
+            u32 data[3] = { 0 };
+            if (f.Read(data, sizeof(data)) == 0 && data[0] == 0x544D5452)
+            {
+                g_enabled = data[1] != 0;
+                g_keySel  = (data[2] < (u32)kOpenKeyCount) ? (int)data[2] : 0;
+            }
+            f.Close();
+        }
+
+        bool Usable(MenuEntry *e) { return e && e->GetGameFunc() != nullptr && e->IsVisible(); }
 
         void Build(void)
         {
             if (g_built) return;
             PluginMenu *menu = PluginMenu::GetRunningInstance();
             if (!menu) return;
-            g_folders = menu->GetFolderList();
-            g_rootEntries = menu->GetEntryList();
-            g_entries.clear();
-            for (MenuFolder *f : g_folders)
-                g_entries.push_back(f->GetEntryList());
+            for (MenuFolder *mf : menu->GetFolderList())
+            {
+                Folder f;
+                for (MenuEntry *e : mf->GetEntryList())
+                    if (Usable(e)) f.entries.push_back(e);
+                if (f.entries.empty()) continue;   // RT で使える項目がないフォルダは出さない
+                f.label = " " + mf->Name();
+                g_folders.push_back(f);
+            }
             g_built = true;
         }
 
         int Count(void)
         {
-            if (g_folder < 0) return (int)(g_folders.size() + g_rootEntries.size());
-            return (int)g_entries[g_folder].size();
-        }
-
-        // 一番上の i 番目がエントリなら返す (フォルダなら nullptr)
-        MenuEntry *EntryAt(int i)
-        {
-            if (g_folder >= 0) return (i >= 0 && i < (int)g_entries[g_folder].size()) ? g_entries[g_folder][i] : nullptr;
-            i -= (int)g_folders.size();
-            return (i >= 0 && i < (int)g_rootEntries.size()) ? g_rootEntries[i] : nullptr;
+            return g_folder < 0 ? (int)g_folders.size() : (int)g_folders[g_folder].entries.size();
         }
 
         void Clamp(void)
@@ -77,79 +114,70 @@ namespace CTRPluginFramework
             return g_holdFrames > 24 && (g_holdFrames % 4) == 0;
         }
 
-        // ---- 描画 (ゲームの下画面に毎フレーム描く) ----
+        bool OpenKeyPressed(void)
+        {
+            const u32 keys = kOpenKeys[g_keySel].keys;
+            return (Controller::GetKeysDown() & keys) == keys && (Controller::GetKeysPressed() & keys) != 0;
+        }
+
+        // ---- 描画 (ゲームの下画面に毎フレーム描く。描く範囲は項目の数だけにして軽くする) ----
         bool Draw(const Screen &screen)
         {
             if (!g_open || screen.IsTop) return false;
 
             const FwkSettings &st = FwkSettings::Get();
-            const Color &bg   = st.BackgroundMainColor;
-            const Color &bd   = st.BackgroundBorderColor;
-            const Color &txt  = st.MainTextColor;
-            const Color  sel(0x40, 0x40, 0x60);
-            const Color  on(0x01, 0xE3, 0x0E);
-            const Color  off(0x96, 0x96, 0x96);
-
-            Renderer::SetTarget(BOTTOM);
-            Renderer::DrawRect(0, 0, 320, 240, bg);
-            Renderer::DrawRect(0, 20, 320, 1, bd);
-            Renderer::DrawRect(0, 219, 320, 1, bd);
-
-            int y = 2;
-            const std::string title = g_folder < 0 ? std::string("RT Menu") : "RT Menu > " + g_folders[g_folder]->Name();
-            Renderer::DrawSysString(title.c_str(), 6, y, 316, txt);
+            const Color &bg  = st.BackgroundMainColor;
+            const Color &bd  = st.BackgroundBorderColor;
+            const Color &txt = st.MainTextColor;
+            static const Color sel(0x40, 0x40, 0x60);
+            static const Color on(0x01, 0xE3, 0x0E);
+            static const Color off(0x96, 0x96, 0x96);
 
             const int n = Count();
-            char page[16];
-            snprintf(page, sizeof(page), "%d/%d", n ? g_sel + 1 : 0, n);
-            y = 2;
-            Renderer::DrawSysString(page, 314 - (int)Renderer::GetTextSize(page), y, 316, txt);
+            const int rows = n < kRows ? n : kRows;
+            const int h = kHeadH + rows * kRowH + 2;
 
-            for (int r = 0; r < kRows; r++)
+            Renderer::SetTarget(BOTTOM);
+            Renderer::DrawRect(0, 0, kW, h, bg);
+            Renderer::DrawRect(0, kHeadH - 1, kW, 1, bd);
+
+            int y = 1;
+            Renderer::DrawSysString(g_folder < 0 ? "RT Menu" : g_folders[g_folder].label.c_str() + 4, 4, y, kW - 4, txt);
+
+            for (int r = 0; r < rows; r++)
             {
                 const int i = g_scroll + r;
                 if (i >= n) break;
-                const int rowY = kListY + r * kRowH;
-                if (i == g_sel) Renderer::DrawRect(2, rowY - 1, 316, kRowH, sel);
+                const int rowY = kHeadH + r * kRowH;
+                if (i == g_sel) Renderer::DrawRect(0, rowY, kW, kRowH, sel);
 
                 y = rowY;
-                MenuEntry *e = EntryAt(i);
-                if (!e)
-                {   // フォルダ
-                    const std::string s = " " + g_folders[i]->Name();
-                    Renderer::DrawSysString(s.c_str(), 8, y, 316, txt);
+                if (g_folder < 0)
+                {
+                    Renderer::DrawSysString(g_folders[i].label.c_str(), 6, y, kW - 4, txt);
                     continue;
                 }
-                const bool usable = e->GetGameFunc() != nullptr;
+                MenuEntry *e = g_folders[g_folder].entries[i];
                 const bool act = e->IsActivated();
-                int x = Renderer::DrawSysString(!usable ? "  -  " : (act ? "[ON] " : "[OFF]"), 8, y,
-                                                316, !usable ? off : (act ? on : off));
+                int x = Renderer::DrawSysString(act ? "ON" : "OFF", 6, y, kW - 4, act ? on : off);
                 y = rowY;
-                Renderer::DrawSysString(e->Name().c_str(), x + 6, y, 316, usable ? txt : off);
+                Renderer::DrawSysString(e->Name().c_str(), x > 34 ? x + 6 : 40, y, kW - 4, txt);
             }
-
-            y = 222;
-            Renderer::DrawSysString(g_folder < 0
-                    ? " 選択  決定 SELECT 閉じる"
-                    : " 選択  ON/OFF  もどる SELECT 閉じる",
-                    6, y, 316, txt);
             return true;
         }
 
         // ---- 操作 (プラグインのループから毎フレーム) ----
         void Tick(void)
         {
-            if (!g_open)
+            if (!g_enabled) { g_open = false; return; }
+
+            if (OpenKeyPressed())
             {
-                if (Controller::IsKeyPressed(Key::Select))
-                {
-                    Build();
-                    g_open = true;
-                }
+                if (!g_open) Build();
+                g_open = !g_open;
                 return;
             }
-
-            if (Controller::IsKeyPressed(Key::Select)) { g_open = false; return; }
+            if (!g_open) return;
 
             if (Repeat(Key::DPadUp))        { g_sel--; Clamp(); }
             else if (Repeat(Key::DPadDown)) { g_sel++; Clamp(); }
@@ -163,17 +191,19 @@ namespace CTRPluginFramework
 
             if (Controller::IsKeyPressed(Key::A))
             {
-                MenuEntry *e = EntryAt(g_sel);
-                if (!e && g_folder < 0 && g_sel < (int)g_folders.size())
+                if (g_folder < 0)
                 {
-                    g_rootSel = g_sel;
-                    g_folder = g_sel;
-                    g_sel = 0;
-                    g_scroll = 0;
-                    Clamp();
+                    if (g_sel < (int)g_folders.size())
+                    {
+                        g_rootSel = g_sel;
+                        g_folder = g_sel;
+                        g_sel = 0;
+                        g_scroll = 0;
+                    }
                 }
-                else if (e && e->GetGameFunc() != nullptr)
+                else
                 {
+                    MenuEntry *e = g_folders[g_folder].entries[g_sel];
                     if (e->IsActivated()) e->Disable();
                     else                  e->Enable();
                 }
@@ -192,16 +222,42 @@ namespace CTRPluginFramework
         }
     }
 
-    // CTRPF 下画面メニューの「RT Menu」ボタンから呼ばれる (ctrpf-patch/patch-home.sh)
-    void RtMenuOpen(void)
+    // CTRPF 下画面メニューの「RT Menu」ボタンから呼ばれる設定画面 (ctrpf-patch/patch-home.sh)
+    void RtMenuSettings(void)
     {
-        Build();
-        g_open = true;
+        for (;;)
+        {
+            const std::string s0 = std::string("RT Menu：") + (g_enabled ? "有効" : "無効");
+            const std::string s1 = std::string("開くボタン：") + kOpenKeys[g_keySel].name;
+            Keyboard kb("RT Menu の設定\n"
+                        "ゲームを止めずに、下画面のチート一覧で ON/OFF できます\n"
+                        " 選択  ページ  決定  もどる",
+                        { s0, s1, "もどる" });
+            const int c = kb.Open();
+            if (c == 0)
+            {
+                g_enabled = !g_enabled;
+                if (!g_enabled) g_open = false;
+                Save();
+            }
+            else if (c == 1)
+            {
+                std::vector<std::string> opts;
+                for (int i = 0; i < kOpenKeyCount; i++)
+                    opts.push_back(std::string(i == g_keySel ? "● " : "　") + kOpenKeys[i].name);
+                Keyboard k2("RT Menu を開くボタン", opts);
+                const int s = k2.Open();
+                if (s >= 0 && s < kOpenKeyCount) { g_keySel = s; Save(); }
+            }
+            else
+                break;
+        }
     }
 
-    // main() から呼ぶ: 操作のコールバックと描画の登録
+    // main() から呼ぶ: 設定の読み込み、操作のコールバックと描画の登録
     void RtMenuInit(PluginMenu &menu)
     {
+        Load();
         menu += Tick;
         OSD::Run(Draw);
     }

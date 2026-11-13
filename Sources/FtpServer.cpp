@@ -199,6 +199,22 @@ namespace CTRPluginFramework
             return fd;
         }
 
+        // データ接続を閉じる。3DS の soc はいきなり close すると未送信のデータを捨てるので、
+        // 送信側を shutdown して、相手が閉じる (recv が 0 を返す) まで待ってから close する。
+        void CloseData(int fd)
+        {
+            if (fd < 0) return;
+            shutdown(fd, SHUT_WR);
+            for (int i = 0; i < 50; i++)
+            {
+                if (!WaitFd(fd, POLLIN, 100)) continue;
+                char tmp[64];
+                ssize_t n = recv(fd, tmp, sizeof(tmp), 0);
+                if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) break;
+            }
+            close(fd);
+        }
+
         // ---------------------------------------------------------------
         //  SD カード
         // ---------------------------------------------------------------
@@ -315,10 +331,13 @@ namespace CTRPluginFramework
                         out += line + name + "\r\n";
                     }
                 }
-                if (!SendAll(fd, out.data(), out.size())) { ok = false; break; }
+                // 送信元はヒープ領域のバッファにする (プラグインのメモリから大きく送ると失敗することがある)
+                size_t len = out.size() < kXferBufSize ? out.size() : kXferBufSize;
+                memcpy(g_xferBuf, out.data(), len);
+                if (!SendAll(fd, g_xferBuf, len)) { ok = false; break; }
             }
             FSDIR_Close(d);
-            close(fd);
+            CloseData(fd);
             Reply(ok ? "226 Transfer complete." : "426 Transfer aborted.");
         }
 
@@ -358,7 +377,7 @@ namespace CTRPluginFramework
                 off += rd;
             }
             FSFILE_Close(h);
-            close(fd);
+            CloseData(fd);
             Reply(ok ? "226 Transfer complete." : "426 Transfer aborted.");
         }
 
@@ -405,7 +424,7 @@ namespace CTRPluginFramework
                 off += n;
             }
             FSFILE_Close(h);
-            close(fd);
+            CloseData(fd);
             Reply(ok ? "226 Transfer complete." : "426 Transfer aborted.");
         }
 
@@ -573,7 +592,7 @@ namespace CTRPluginFramework
             for (u32 addr : kSocBufAddrs)
             {
                 u32 out = 0;
-                if (R_SUCCEEDED(svcControlMemoryUnsafe(&out, addr, kSocBufSize,
+                if (R_SUCCEEDED(svcControlMemoryUnsafe(&out, addr, kSocBufSize + kXferBufSize,
                         (MemOp)(MEMOP_ALLOC | MEMOP_REGION_SYSTEM), (MemPerm)(MEMPERM_READ | MEMPERM_WRITE))))
                     return (u32 *)addr;
             }
@@ -584,8 +603,9 @@ namespace CTRPluginFramework
         {
             if (!g_socBuf) return;
             u32 out = 0;
-            svcControlMemoryUnsafe(&out, (u32)g_socBuf, kSocBufSize, MEMOP_FREE, (MemPerm)0);
+            svcControlMemoryUnsafe(&out, (u32)g_socBuf, kSocBufSize + kXferBufSize, MEMOP_FREE, (MemPerm)0);
             g_socBuf = nullptr;
+            g_xferBuf = nullptr;
         }
 
         void Shutdown(void)
@@ -594,7 +614,6 @@ namespace CTRPluginFramework
             CloseSock(g_ctrl);
             CloseSock(g_listen);
             if (g_socBuf) { socExit(); FreeSocBuf(); }
-            if (g_xferBuf) { free(g_xferBuf); g_xferBuf = nullptr; }
             if (g_sdmc) { FSUSER_CloseArchive(g_sdmc); g_sdmc = 0; }
         }
 
@@ -602,9 +621,10 @@ namespace CTRPluginFramework
         {
             char buf[64];
             g_log.clear();
-            g_xferBuf = (u8 *)malloc(kXferBufSize);
+            // 転送用バッファも soc に渡すので、同じくヒープ領域 (soc 用の直後) に置く
             g_socBuf  = AllocSocBuf();
-            if (!g_xferBuf || !g_socBuf)
+            g_xferBuf = g_socBuf ? (u8 *)g_socBuf + kSocBufSize : nullptr;
+            if (!g_socBuf)
             {
                 FreeSocBuf();
                 err = "メモリが足りません";
