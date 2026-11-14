@@ -24,6 +24,7 @@ namespace CTRPluginFramework
     static const u32 kFnCoinSlot    = 0x00415498;   // (coinMgr, playerIdx) -> slot
     static const u32 kFnCoinStart   = 0x004203A4;   // (coinObj, pos*)
     static const u32 kVtItemBox     = 0x0062EFA8;
+    static const u32 kFnBroadUpdate = 0x003DB3BC;   // (登録, 位置*, 半径) 絞り込み表の更新
 
     enum { KIND_COIN = 0x10, KIND_BOX = 0x11 };
 
@@ -111,6 +112,12 @@ namespace CTRPluginFramework
         {
             float *c = (float *)(col + 0x40);
             c[0] = x; c[1] = y; c[2] = z;
+
+            // 当たり判定の「近くにいるか」の絞り込み表を新しい位置で登録し直す。
+            // ボックスは動かない物体の扱いで、ゲーム側は開始時に一度しか登録しない。
+            u32 ent = *(u32 *)(box + 0x84);
+            if (ValidPtr(ent))
+                ((void (*)(u32, float *, float))kFnBroadUpdate)(ent, c, *(float *)(box + 0x88));
         }
 
         // カートとの当たり判定に使われる球（行列の平行移動と中心。高さは見た目より17低い）

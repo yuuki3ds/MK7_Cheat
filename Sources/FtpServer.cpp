@@ -423,6 +423,7 @@ namespace CTRPluginFramework
                 if (R_FAILED(FSFILE_Write(h, &wr, off, g_xferBuf, (u32)n, 0)) || wr != (u32)n) { ok = false; break; }
                 off += n;
             }
+            FSFILE_Flush(h);   // SD に確実に書き出してから閉じる
             FSFILE_Close(h);
             CloseData(fd);
             Reply(ok ? "226 Transfer complete." : "426 Transfer aborted.");

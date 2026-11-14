@@ -689,6 +689,8 @@ namespace CTRPluginFramework
     static MenuEntry *g_entGPTimer  = nullptr;
     static MenuEntry *g_entRearView = nullptr;
     static MenuEntry *g_entTimeStop = nullptr;
+    static MenuEntry *g_entAutoAccel = nullptr;   // 0x5EBDD4〜0x5EBE08 を使う (時間停止と排他)
+    static MenuEntry *g_entJumpMash  = nullptr;
 
     static void DisableIfOn(MenuEntry *e)
     {
@@ -1178,6 +1180,8 @@ namespace CTRPluginFramework
             DisableIfOn(g_entBalloon);
             DisableIfOn(g_entCoinRace);
             DisableIfOn(g_entMenuCut);
+            DisableIfOn(g_entAutoAccel);
+            DisableIfOn(g_entJumpMash);
         }
 
         // 空き領域のコードを先に書いてからフックを張る
@@ -1196,6 +1200,36 @@ namespace CTRPluginFramework
                 W32(a, (R32(a) & 0x100) ? 0x000 : 0x100);
         }
         prev = down;
+    }
+
+    // ---------------------------------------------------------------
+    //  オートアクセル / ジャンプ連打 (日本版のみ、コード集「オートアクセル・ジャンプ連打」)
+    //  カート用の入力処理 (0x450350) の最後に割り込み、0x6BE990 のビットを押しっぱなし、
+    //  0x6BE994 のビットを押している間だけ連打にする。2つのエントリで同じ割り込みを共有する
+    // ---------------------------------------------------------------
+    static const u32 kAutoInputCode[] = {   // 0x5EBDD4〜0x5EBE08
+        0xE59F302C, 0xE5902110, 0xE593C000, 0xE182200C, 0xE593C008, 0xE28CC001, 0xE583C008,
+        0xE31C0002, 0xE593C004, 0x01C2200C, 0xE5802110, 0xE5901010, 0xEAF99185, 0x006BE990,
+    };
+
+    static void AutoInput(MenuEntry *e)
+    {
+        if (e->WasJustActivated()) DisableIfOn(g_entTimeStop);
+        const bool accel = g_entAutoAccel && g_entAutoAccel->IsActivated();
+        const bool mash  = g_entJumpMash  && g_entJumpMash->IsActivated();
+        if (!accel && !mash)
+        {
+            // OFF: 分岐を戻してから空き領域を消す
+            W32(0x0045041C, 0xE5901010);
+            for (u32 a = 0x005EBDD4; a <= 0x005EBE08; a += 4) W32(a, 0);
+            W32(0x006BE990, 0);
+            W32(0x006BE994, 0);
+            return;
+        }
+        WriteBlock(0x005EBDD4, kAutoInputCode);
+        W32(0x006BE990, accel ? 0x00000001 : 0);   // 押しっぱなし: アクセル
+        W32(0x006BE994, mash  ? 0x00004000 : 0);   // 押している間だけ連打: ドリフト・ジャンプ (R)
+        W32(0x0045041C, 0xEA066E6C);
     }
 
     // ---------------------------------------------------------------
@@ -1333,6 +1367,19 @@ namespace CTRPluginFramework
                                  "長押しは不要です。もう一度入力で使用されます");
         *player += new MenuEntry(Col(0x01FFE1, "自動JA"), AutoJA,
                                  "ボタンを押さなくても自動でジャンプアクションします");
+        if (jp)
+        {
+            g_entAutoAccel = new MenuEntry("オートアクセル", AutoInput,
+                                           "何も押さなくてもアクセルが入り続けます\n"
+                                           "カートの操作だけに効き、メニューには影響しません\n"
+                                           "BETA の時間停止とは同時に使えません");
+            *player += g_entAutoAccel;
+            g_entJumpMash = new MenuEntry("ジャンプ連打", AutoInput,
+                                          std::string(BTN_R " を押している間、ジャンプ（ドリフトボタン）が連打になります\n")
+                                          + "カートの操作だけに効き、メニューには影響しません\n"
+                                          "BETA の時間停止とは同時に使えません");
+            *player += g_entJumpMash;
+        }
         g_entRearView = new MenuEntry(Col(0x01C7FF, "バックミラー"), RearView,
                                  Col(0x01F214, BTN_LEFT));
         *player += g_entRearView;
@@ -1355,7 +1402,7 @@ namespace CTRPluginFramework
         MenuFolder *beta = new MenuFolder(Col(0xFF5C5F, "BETA"));
         g_entTimeStop = new MenuEntry(Col(0xFF5C5F, "自分以外の時間停止"), TimeStopBeta,
                                       Col(0xFF0104, "動作が不安定です") + "\n"
-                                      "GPタイマー・バックミラー・ふうせんレース・コインレース・\nメニュー高速化とは同時に使えません\n"
+                                      "GPタイマー・バックミラー・ふうせんレース・コインレース・\nメニュー高速化・オートアクセル・ジャンプ連打とは\n同時に使えません\n"
                                       "(ONにすると自動でOFFになります)");
         g_entTimeStop->Hotkeys += Hotkey(Key::Y, "停止 / 解除の切り替え");
         *beta += g_entTimeStop;
@@ -1546,6 +1593,7 @@ namespace CTRPluginFramework
     }
 
     void RtMenuInit(PluginMenu &menu);   // RtMenu.cpp
+    void RtMenuShutdown(void);
 
     static bool OnMenuOpening(void)
     {
@@ -1564,6 +1612,7 @@ namespace CTRPluginFramework
     void OnProcessExit(void)
     {
         ItemRainShutdown(); // アイテムレインのフックを外す
+        RtMenuShutdown();   // RT Menu の操作無効化を外す
     }
 
     int main(void)
