@@ -19,19 +19,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: CTRPF と 3gxtool を入れる
+      - name: 3gxtool を入れる
+        # pkg.devkitpro.org は Actions から 403 で拒否されることがあるので、
+        # thepixellizeross の置き場だけを使う設定ファイルで 3gxtool を入れる。
+        # libctrpf は次のステップでソースからビルドして置くのでパッケージは不要。
         run: |
-          cat >> /opt/devkitpro/pacman/etc/pacman.conf <<'CONF'
-
-          [thepixellizeross-lib]
-          Server = https://thepixellizeross.gitlab.io/packages/any
-          SigLevel = Optional
+          awk '/^\[/ && !/^\[options\]/ {exit} {print}' /opt/devkitpro/pacman/etc/pacman.conf > /tmp/pacman-tpr.conf
+          cat >> /tmp/pacman-tpr.conf <<'CONF'
 
           [thepixellizeross-linux]
           Server = https://thepixellizeross.gitlab.io/packages/x86_64/linux
           SigLevel = Optional
           CONF
-          dkp-pacman -Sy --noconfirm libctrpf 3gxtool
+          dkp-pacman --config /tmp/pacman-tpr.conf -Sy --noconfirm 3gxtool
+          mkdir -p "$DEVKITPRO/libctrpf/lib" "$DEVKITPRO/libctrpf/include"
 
       - name: 日本語キーボード入りの CTRPF をビルドして入れ替える
         run: |
@@ -41,6 +42,7 @@ jobs:
           git submodule update --init --recursive
           cp "$GITHUB_WORKSPACE/ctrpf-patch/KeyboardImpl.cpp" Library/source/CTRPluginFrameworkImpl/Menu/
           cp "$GITHUB_WORKSPACE/ctrpf-patch/KeyboardImpl.hpp" Library/include/CTRPluginFrameworkImpl/Menu/
+          sh "$GITHUB_WORKSPACE/ctrpf-patch/patch-home.sh" /tmp/ctrpf
           sed -i 's/-Werror\([[:space:]]\|$\)/\1/g' Library/Makefile
           make -C Library
           cp Library/lib/libctrpf*.a "$DEVKITPRO/libctrpf/lib/"

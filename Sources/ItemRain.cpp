@@ -1,15 +1,21 @@
 // アイテムレイン（プラグイン版） MK7 日本版 Ver1.2 (0004000000030600) 専用
 // アイテム／コイン／アイテムボックスを各カートの前方上空から降らせる。
 // ARコード版アイテムレイン（002D9668 のフック）とは同時に使えないので、AR版はOFFにすること。
+// 予備のアイテムボックスはコースの読み込み時に作らせるので、レースに入る前（メニュー中）にONにしておくこと。
+// 空き領域は 0x5EBD24〜0x5EBD2C と 0x5EBD5C を使う。
 //
-// main.cpp のカスタムモードフォルダに「アイテムレイン」「アイテムドロップ」として登録済み (日本版のみ)。
+// main.cpp のカスタムモードフォルダに「アイテムレイン」として登録済み (日本版のみ)。
 // ソフト終了時は OnProcessExit から ItemRainShutdown() を呼び、フックを外す。
+// 空き領域 0x5EBD5C は BETA の時間停止 (0x5EBD30〜0x5EBF2C) と重なるので、main.cpp で排他にしている。
 
 #include <3ds.h>
 #include <CTRPluginFramework.hpp>
 #include <string>
 #include <vector>
 #include "ItemRain.hpp"
+#include "ItemIcons.hpp"
+#include "CTRPluginFrameworkImpl/Graphics/Renderer.hpp"
+#include "CTRPluginFrameworkImpl/Graphics/Window.hpp"
 
 namespace CTRPluginFramework
 {
@@ -24,6 +30,16 @@ namespace CTRPluginFramework
     static const u32 kFnCoinSlot    = 0x00415498;   // (coinMgr, playerIdx) -> slot
     static const u32 kFnCoinStart   = 0x004203A4;   // (coinObj, pos*)
     static const u32 kVtItemBox     = 0x0062EFA8;
+    static const u32 kFnBroadUpdate = 0x003DB3BC;   // (登録, 位置*, 半径) 絞り込み表の更新
+
+    // 予備のボックスを作らせるためのフック（コースの物体を作る処理 0x36CADC の中）
+    static const u32 kListHookAddr  = 0x0036CB3C;   // ldr r9, [r4, #0x2c]（配置一覧を読む）
+    static const u32 kListHookOrig  = 0xE594902C;
+    static const u32 kListVeneer    = 0x005EBD2C;   // ldr pc, [pc, #0x28] → 0x5EBD5C の値へ
+    static const u32 kListVeneerLit = 0x005EBD5C;
+    static const u16 kObjIdItemBox  = 4;            // 配置データ上のアイテムボックスの番号
+    static const u32 kNumSpare      = 32;           // 余分に作らせる数
+    static const float kParkDepth   = 2000.0f;      // 予備を隠しておく深さ（元の位置の真下）
 
     enum { KIND_COIN = 0x10, KIND_BOX = 0x11 };
 
@@ -45,25 +61,41 @@ namespace CTRPluginFramework
     };
     static const int kNumKinds = sizeof(g_kinds) / sizeof(g_kinds[0]);
 
-    static int   g_amountSel = 1;       // 量の選択 (0 少なめ / 1 ふつう / 2 多め / 3 大量)
     static u32   g_interval  = 241;     // カート更新の回数で数える（8台×60fps＝480/秒）。8で割って1余る値
     static float g_height    = 120.0f;  // 降らせる高さ
     static float g_fallSpeed = 3.0f;    // アイテムボックスの落下速度（1フレームあたり）
     static float g_boxFloat  = 15.0f;   // ボックスが止まる高さ（カートの高さ＋この値）
+    static int   g_amountSel = 1;       // 量の選択 (0 少なめ / 1 ふつう / 2 多め / 3 大量)
+    static u32   g_boxLimit  = 16;      // 降らせたボックスを同時に残す数（超えたら古い物から元の場所へ戻す）
 
     // ---- 内部状態 ----
     static bool g_installed = false;
     static bool g_running   = false;   // レイン動作中
-    static u32  g_users     = 0;       // bit0=レイン, bit1=キードロップ
-    static volatile u8 g_dropReq = 0;  // キードロップの要求（0=なし, それ以外=種類+1）
     static u32  g_counter   = 0;
     static u32  g_rng       = 0x1234ABCD;
     static u8   g_table[32];
     static int  g_tableLen  = 0;
 
     struct Fall { u32 obj; float ground; };
-    static Fall g_falls[8];
+    static Fall g_falls[16];
+
+    // コースから借りているボックス（元の位置を覚えておき、あとで返す）
+    struct Borrow { u32 obj; float home[3]; u32 seq; };
+    static const u32 kMaxBorrow = 64;
+    static Borrow g_borrow[kMaxBorrow];
+    static u32    g_borrowSeq = 0;
     static u32  g_lastObjDir = 0;
+
+    // 予備のボックス用の配置データ（ゲームに読ませる偽の一覧）
+    static u8  g_fakeList[0x40]  __attribute__((aligned(4)));
+    static u32 g_fakeArr[1024 + kNumSpare];
+    static u8  g_fakeEntry[kNumSpare][0x40] __attribute__((aligned(4)));
+    static u8  g_fakeGobj[kNumSpare][0x40]  __attribute__((aligned(4)));
+
+    static inline bool IsSpareEntry(u32 e)
+    {
+        return e >= (u32)&g_fakeEntry[0][0] && e < (u32)&g_fakeEntry[0][0] + sizeof(g_fakeEntry);
+    }
 
     static inline bool ValidPtr(u32 p) { return p >= 0x14000000 && p < 0x18000000 && (p & 3) == 0; }
 
@@ -113,14 +145,40 @@ namespace CTRPluginFramework
         {
             float *c = (float *)(col + 0x40);
             c[0] = x; c[1] = y; c[2] = z;
+
+            // 当たり判定の「近くにいるか」の絞り込み表を新しい位置で登録し直す。
+            // ボックスは動かない物体の扱いで、ゲーム側は開始時に一度しか登録しない。
+            u32 ent = *(u32 *)(box + 0x84);
+            if (ValidPtr(ent))
+                ((void (*)(u32, float *, float))kFnBroadUpdate)(ent, c, *(float *)(box + 0x88));
+        }
+
+        // カートとの当たり判定に使われる球（行列の平行移動と中心。高さは見た目より17低い）
+        u32 hit = *(u32 *)(box + 0x260);
+        if (ValidPtr(hit))
+        {
+            float *m = (float *)hit;
+            m[5]  = x;          // +0x14
+            m[9]  = y - 17.0f;  // +0x24
+            m[13] = z;          // +0x34
+            m[24] = x;          // +0x60
+            m[25] = y - 17.0f;  // +0x64
+            m[26] = z;          // +0x68
         }
     }
+
+    struct Borrow;
+    static void ReturnBox(Borrow &b);
+
+    // ボックスが出ているか（+0x6C の bit1。取られている間は 0）
+    static inline bool BoxPresent(u32 box) { return (*(u32 *)(box + 0x6C) & 2) != 0; }
 
     static void UpdateBoxes(u32 objDir)
     {
         if (objDir != g_lastObjDir)
         {   // レースが変わったら落下中リストを捨てる
             for (Fall &f : g_falls) f.obj = 0;
+            for (Borrow &b : g_borrow) b.obj = 0;
             g_lastObjDir = objDir;
         }
         for (Fall &f : g_falls)
@@ -133,6 +191,32 @@ namespace CTRPluginFramework
             SetBoxPos(f.obj, p[0], y, p[2]);
             if (y <= f.ground) f.obj = 0;
         }
+
+        // 取られたボックスは、その場で復活させずに元の場所へ返す
+        for (Borrow &b : g_borrow)
+        {
+            if (!b.obj) continue;
+            if (!ValidPtr(b.obj) || *(u32 *)b.obj != kVtItemBox) { b.obj = 0; continue; }
+            if (!BoxPresent(b.obj)) ReturnBox(b);
+        }
+    }
+
+    static inline bool IsBox(u32 o) { return ValidPtr(o) && *(u32 *)o == kVtItemBox; }
+
+    // 借りたボックスを元の場所へ返す
+    static void ReturnBox(Borrow &b)
+    {
+        if (IsBox(b.obj))
+        {
+            for (Fall &f : g_falls) if (f.obj == b.obj) f.obj = 0;
+            SetBoxPos(b.obj, b.home[0], b.home[1], b.home[2]);
+        }
+        b.obj = 0;
+    }
+
+    static void ReturnAllBoxes(void)
+    {
+        for (Borrow &b : g_borrow) if (b.obj) ReturnBox(b);
     }
 
     static void SpawnBox(u32 objDir, u32 rnd, const float *pos, float groundY)
@@ -142,20 +226,52 @@ namespace CTRPluginFramework
         u32 arr   = *(u32 *)(objDir + 0x4C);
         if (!ValidPtr(arr) || count == 0 || count > 0x400) return;
 
-        u32 boxes[64]; u32 n = 0;
-        for (u32 i = 0; i < count && n < 64; i++)
-        {
-            u32 o = *(u32 *)(arr + i * 4);
-            if (ValidPtr(o) && *(u32 *)o == kVtItemBox) boxes[n++] = o;
-        }
-        if (n == 0) return;
-
         Fall *slot = nullptr;
         for (Fall &f : g_falls) if (!f.obj) { slot = &f; break; }
         if (!slot) return;
 
+        // 予備のボックスがあれば、それだけを使う（コースのボックスには触らない）。
+        // 予備がないコースでは、コースのボックスを借りる。
+        bool haveSpare = false;
+        for (u32 i = 0; i < count; i++)
+        {
+            u32 o = *(u32 *)(arr + i * 4);
+            if (IsBox(o) && IsSpareEntry(*(u32 *)(o + 8))) { haveSpare = true; break; }
+        }
+
+        // 同時に出しておく数。予備がないコースでは、コースのボックスを借りすぎないよう6個まで。
+        u32 cap   = haveSpare ? kNumSpare : 6;
+        u32 limit = g_boxLimit > cap ? cap : g_boxLimit;
+        if (limit == 0) return;
+
+        // 制限数に達していたら、いちばん古い物を元の場所へ返す
+        u32 used = 0; Borrow *oldest = nullptr; Borrow *freeSlot = nullptr;
+        for (Borrow &b : g_borrow)
+        {
+            if (b.obj && !IsBox(b.obj)) b.obj = 0;
+            if (b.obj) { used++; if (!oldest || b.seq < oldest->seq) oldest = &b; }
+            else if (!freeSlot) freeSlot = &b;
+        }
+        if (used >= limit && oldest) { ReturnBox(*oldest); freeSlot = oldest; }
+        if (!freeSlot) return;
+
+        u32 boxes[64]; u32 n = 0;
+        for (u32 i = 0; i < count && n < 64; i++)
+        {
+            u32 o = *(u32 *)(arr + i * 4);
+            if (!IsBox(o)) continue;
+            if (haveSpare && !IsSpareEntry(*(u32 *)(o + 8))) continue;
+            bool borrowed = false;
+            for (Borrow &b : g_borrow) if (b.obj == o) { borrowed = true; break; }
+            if (!borrowed && BoxPresent(o)) boxes[n++] = o;   // 取られて消えている物は借りない
+        }
+        if (n == 0) return;
+
         u32 box = boxes[(rnd >> 4) % n];
-        for (Fall &f : g_falls) if (f.obj == box) return;   // 落下中の物は使わない
+        const float *p = (const float *)(box + 0x48);
+        freeSlot->obj = box;
+        freeSlot->home[0] = p[0]; freeSlot->home[1] = p[1]; freeSlot->home[2] = p[2];
+        freeSlot->seq = ++g_borrowSeq;
 
         SetBoxPos(box, pos[0], pos[1], pos[2]);
         slot->obj = box;
@@ -195,31 +311,6 @@ namespace CTRPluginFramework
 
         if (idx == 0 && objDir) UpdateBoxes(objDir);   // 1フレームに1回
 
-        // キードロップ：自分のカートのすぐ前に1個落とす
-        if (idx == 0 && g_dropReq)
-        {
-            u8 kind = g_dropReq - 1;
-            g_dropReq = 0;
-            const float *k = (const float *)kart;
-            float pos[3], vel[3] = { 0.0f, 0.0f, 0.0f };
-            pos[0] = k[9]  + k[6] * 80.0f;
-            pos[1] = k[10] + k[7] * 80.0f + 60.0f;
-            pos[2] = k[11] + k[8] * 80.0f;
-            if (kind == KIND_COIN)
-                SpawnCoin(kart, idx, pos);
-            else if (kind == KIND_BOX)
-                {
-                float bpos[3] = { k[9], k[10] + g_height, k[11] };
-                SpawnBox(objDir, Rand(), bpos, k[10] + g_boxFloat);
-            }
-            else if (ValidPtr(itemDir))
-            {
-                u32 mgr = ((u32 (*)(u32, u32))kFnGetItemMgr)(itemDir, kind);
-                if (ValidPtr(mgr))
-                    ((void (*)(u32, u32, float *, float *))kFnDropItem)(mgr, idx, pos, vel);
-            }
-        }
-
         if (!g_running || g_tableLen == 0 || g_interval == 0) return;
         if (++g_counter < g_interval) return;
         g_counter = 0;
@@ -256,6 +347,67 @@ namespace CTRPluginFramework
         }
     }
 
+    // ---- コース読み込み時：配置一覧に予備のボックスを足す ----
+    // 元の一覧を写し、最初に見つかったアイテムボックスの項目を kNumSpare 個ぶん複製して末尾に足す。
+    // 複製は元のボックスの真下（kParkDepth 下）に置く。作る処理はゲーム本来のもの。
+    extern "C" u32 ItemRain_BuildList(u32 list)
+    {
+        if (!g_installed || !ValidPtr(list)) return list;
+        u32 count = *(u16 *)(list + 4);
+        u32 arr   = *(u32 *)(list + 0x14);
+        if (!ValidPtr(arr) || count == 0 || count > 1024) return list;
+
+        u32 src = 0;
+        for (u32 i = 0; i < count; i++)
+        {
+            u32 e = *(u32 *)(arr + i * 4);
+            if (!ValidPtr(e)) return list;
+            u32 g = *(u32 *)e;
+            if (!ValidPtr(g)) return list;
+            if (!src && *(u16 *)g == kObjIdItemBox) src = e;
+            g_fakeArr[i] = e;
+        }
+        if (!src) return list;                      // ボックスのないコースでは何もしない
+
+        for (u32 k = 0; k < kNumSpare; k++)
+        {
+            for (u32 b = 0; b < 0x40; b++)
+            {
+                g_fakeEntry[k][b] = *(u8 *)(src + b);
+                g_fakeGobj[k][b]  = *(u8 *)(*(u32 *)src + b);
+            }
+            *(u32 *)&g_fakeEntry[k][0] = (u32)&g_fakeGobj[k][0];
+            float *pos = (float *)&g_fakeGobj[k][4];        // 配置データの位置（x, y, z）
+            pos[1] -= kParkDepth;
+            g_fakeArr[count + k] = (u32)&g_fakeEntry[k][0];
+        }
+        for (u32 b = 0; b < sizeof(g_fakeList); b++) g_fakeList[b] = *(u8 *)(list + b);
+        *(u16 *)&g_fakeList[4]    = (u16)(count + kNumSpare);
+        *(u32 *)&g_fakeList[0x14] = (u32)&g_fakeArr[0];
+        return (u32)&g_fakeList[0];
+    }
+
+    extern "C" void ItemRain_ListStub(void);
+    __asm__(
+        ".arm\n"
+        ".align 2\n"
+        ".global ItemRain_ListStub\n"
+        ".type ItemRain_ListStub, %function\n"
+        "ItemRain_ListStub:\n"
+        "    push  {r0-r3, r12, lr}\n"
+        "    vpush {d0-d7}\n"
+        "    ldr   r0, [r4, #0x2c]\n"      // 上書きした元の命令が読む値
+        "    mov   r9, sp\n"               // r9 はこのあと上書きするので自由に使える
+        "    bic   sp, sp, #7\n"
+        "    bl    ItemRain_BuildList\n"
+        "    mov   sp, r9\n"
+        "    mov   r9, r0\n"
+        "    vpop  {d0-d7}\n"
+        "    pop   {r0-r3, r12, lr}\n"
+        "    ldr   pc, =0x0036CB40\n"
+        "    .ltorg\n"
+    );
+
     // ---- フック用スタブ（ARM） ----
     extern "C" void ItemRain_Stub(void);
     __asm__(
@@ -281,6 +433,7 @@ namespace CTRPluginFramework
     {
         if (g_installed) return;
         for (Fall &f : g_falls) f.obj = 0;
+        for (Borrow &b : g_borrow) b.obj = 0;
         g_lastObjDir = 0;
         g_counter = 0;
         RebuildTable();
@@ -290,6 +443,12 @@ namespace CTRPluginFramework
         // b kVeneerAddr
         u32 br = 0xEA000000 | (((kVeneerAddr - kHookAddr - 8) >> 2) & 0x00FFFFFF);
         Process::Patch(kHookAddr, br);
+
+        // 予備のボックス用のフック
+        Process::Patch(kListVeneer,    0xE59FF028);
+        Process::Patch(kListVeneerLit, (u32)ItemRain_ListStub);
+        u32 br2 = 0xEA000000 | (((kListVeneer - kListHookAddr - 8) >> 2) & 0x00FFFFFF);
+        Process::Patch(kListHookAddr, br2);
         g_installed = true;
     }
 
@@ -297,9 +456,13 @@ namespace CTRPluginFramework
     {
         if (!g_installed) return;
         g_running = false;
+        ReturnAllBoxes();                       // 借りたボックスを元の場所へ
         Process::Patch(kHookAddr, kHookOrig);
         Process::Patch(kVeneerAddr,     0);
         Process::Patch(kVeneerAddr + 4, 0);
+        Process::Patch(kListHookAddr, kListHookOrig);
+        Process::Patch(kListVeneer,    0);
+        Process::Patch(kListVeneerLit, 0);
         g_installed = false;
     }
 
@@ -310,48 +473,120 @@ namespace CTRPluginFramework
 
         if (!entry->IsActivated())
         {
-            g_running = false;
-            g_users &= ~1u;
-            if (!g_users) Uninstall();
+            Uninstall();
             return;
         }
-        g_users |= 1;
         if (!g_installed) Install();
         g_running = true;
-    }
-
-    // キーで1個ずつ落とす (ホットキー 0:コイン 1:アイテムボックス 2:バナナ、初期値 ← → ↑)
-    void ItemDropKey(MenuEntry *entry)
-    {
-        if (Process::GetTitleID() != 0x0004000000030600ULL) return;
-
-        static bool prev[3] = { false, false, false };
-        if (!entry->IsActivated())
-        {
-            g_users &= ~2u;
-            if (!g_users) Uninstall();
-            prev[0] = prev[1] = prev[2] = false;
-            return;
-        }
-        g_users |= 2;
-        if (!g_installed) Install();
-
-        static const u8 kinds[3] = { KIND_COIN, KIND_BOX, 0x00 };
-        for (int i = 0; i < 3; i++)
-        {
-            const bool down = entry->Hotkeys[i].IsDown();
-            if (down && !prev[i] && !g_dropReq)   // 押した瞬間だけ
-                g_dropReq = kinds[i] + 1;
-            prev[i] = down;
-        }
     }
 
     // ソフト終了時に呼ぶ (フックを元に戻す)
     void ItemRainShutdown(void)
     {
-        g_users = 0;
-        g_dropReq = 0;
+        // ソフト終了中はゲームのメモリが壊れていることがあるので、ボックスは返さずにフックだけ外す
+        for (Borrow &b : g_borrow) b.obj = 0;
         Uninstall();
+    }
+
+    // ---- アイテムスイッチ (アイコンを並べた1画面。十字キー＋A かタッチで ON/OFF) ----
+    static void DrawIcon(int idx, int x, int y, bool on)
+    {
+        const u8 *p = kItemIcons[idx];
+        for (int j = 0; j < kItemIconSize; j++)
+            for (int i = 0; i < kItemIconSize; i++, p += 3)
+            {
+                u8 r = p[0], g = p[1], b = p[2];
+                if (!on)
+                {   // OFF は暗い灰色にする
+                    const u8 l = (u8)((r * 30 + g * 59 + b * 11) / 100);
+                    r = g = b = (u8)(l / 3 + 30);
+                }
+                Renderer::DrawPixel(x + i, y + j, Color(r, g, b));
+            }
+    }
+
+    static void ItemSwitchScreen(void)
+    {
+        const int cols = 4, cell = 56, box = 44;
+        const int gx = 20 + (280 - cols * cell) / 2 + (cell - box) / 2;
+        const int gy = 30;
+        const int slots = kNumKinds + 1;          // 最後の枠は「すべて ON / OFF」
+        static const Color onC(0x01, 0xE3, 0x0E), offC(0x50, 0x50, 0x50), cur(0xFF, 0xE1, 0x00);
+        int sel = 0;
+        bool wasTouch = true;                      // 開いた瞬間のタッチは無視
+
+        auto toggle = [&](int i)
+        {
+            if (i < kNumKinds) g_kinds[i].on = !g_kinds[i].on;
+            else
+            {
+                bool any = false;
+                for (int k = 0; k < kNumKinds; k++) any |= g_kinds[k].on;
+                for (int k = 0; k < kNumKinds; k++) g_kinds[k].on = !any;
+            }
+        };
+
+        for (;;)
+        {
+            Controller::Update();
+            if (Controller::IsKeyPressed(Key::B)) break;
+            if (Controller::IsKeyPressed(Key::DPadLeft))  sel = (sel + slots - 1) % slots;
+            if (Controller::IsKeyPressed(Key::DPadRight)) sel = (sel + 1) % slots;
+            if (Controller::IsKeyPressed(Key::DPadUp))    sel = (sel - cols + slots * 2) % slots;
+            if (Controller::IsKeyPressed(Key::DPadDown))  sel = (sel + cols) % slots;
+            if (Controller::IsKeyPressed(Key::A)) toggle(sel);
+            if (Controller::IsKeyPressed(Key::X)) for (int k = 0; k < kNumKinds; k++) g_kinds[k].on = true;
+            if (Controller::IsKeyPressed(Key::Y)) for (int k = 0; k < kNumKinds; k++) g_kinds[k].on = false;
+
+            const bool touch = Touch::IsDown();
+            if (touch && !wasTouch)
+            {
+                const IntVector t(Touch::GetPosition());
+                for (int i = 0; i < slots; i++)
+                {
+                    const int x = gx + (i % cols) * cell, y = gy + (i / cols) * cell;
+                    if (t.x >= x && t.x < x + box && t.y >= y && t.y < y + box) { sel = i; toggle(i); break; }
+                }
+            }
+            wasTouch = touch;
+
+            // 上画面: 説明
+            int onCount = 0;
+            for (int k = 0; k < kNumKinds; k++) if (g_kinds[k].on) onCount++;
+            const Color &txt = FwkSettings::Get().MainTextColor;
+            Renderer::SetTarget(TOP);
+            Window::TopWindow.Draw("アイテムスイッチ");
+            int y = 50;
+            const std::string cnt = std::to_string(onCount) + " / " + std::to_string(kNumKinds) + " 種類 ON";
+            Renderer::DrawSysString(cnt.c_str(), 40, y, 360, txt);
+            y += 10;
+            Renderer::DrawSysString("\uE000 / タッチ：ON・OFF の切り替え", 40, y, 360, txt);
+            Renderer::DrawSysString("\uE002：すべて ON　\uE003：すべて OFF", 40, y, 360, txt);
+            Renderer::DrawSysString("\uE001：もどる", 40, y, 360, txt);
+
+            // 下画面: アイコン
+            Renderer::SetTarget(BOTTOM);
+            Window::BottomWindow.Draw();
+            for (int i = 0; i < slots; i++)
+            {
+                const int x = gx + (i % cols) * cell, yy = gy + (i / cols) * cell;
+                const bool on = i < kNumKinds ? g_kinds[i].on : (onCount > 0);
+                if (i == sel) Renderer::DrawRect(x - 3, yy - 3, box + 6, box + 6, cur);
+                Renderer::DrawRect(x, yy, box, box, on ? onC : offC);
+                Renderer::DrawRect(x + 2, yy + 2, box - 4, box - 4, Color(0xFF, 0xFF, 0xFF));
+                const int o = (box - kItemIconSize) / 2;
+                if (i < kNumKinds) DrawIcon(i, x + o, yy + o, g_kinds[i].on);
+                else
+                {
+                    int ty = yy + 14;
+                    const char *lbl = onCount > 0 ? "OFF" : "ON";
+                    const int tw = (int)Renderer::GetTextSize(lbl);
+                    Renderer::DrawSysString(lbl, x + (box - tw) / 2, ty, x + box, Color(0x30, 0x30, 0x30));
+                }
+            }
+            Renderer::EndFrame();
+        }
+        RebuildTable();
     }
 
     void ItemRainSettings(MenuEntry *entry)
@@ -361,6 +596,10 @@ namespace CTRPluginFramework
             "少なめ（約1個/秒）", "ふつう（約2個/秒）", "多め（約5個/秒）", "大量（約10個/秒）"
         };
         static const u32 amountVals[] = { 481, 241, 97, 49 };
+        static const char *heightNames[] = { "低い（60）", "ふつう（120）", "高い（240）" };
+        static const float heightVals[] = { 60.0f, 120.0f, 240.0f };
+        static const u32 limitVals[] = { 4, 8, 12, 16, 24, 32 };
+        const int limitCount = sizeof(limitVals) / sizeof(limitVals[0]);
 
         for (;;)
         {
@@ -370,7 +609,12 @@ namespace CTRPluginFramework
 
             const std::string amountLabel = std::string("降る量：") + amountNames[g_amountSel];
             const std::string switchLabel = "アイテムスイッチ：" + std::to_string(onCount) + "種類ON";
-            Keyboard top("アイテムレインの設定", { amountLabel, switchLabel, "もどる" });
+            int hSel = 1;
+            for (int i = 0; i < 3; i++)
+                if (g_height == heightVals[i]) hSel = i;
+            const std::string heightLabel = std::string("高さ：") + heightNames[hSel];
+            const std::string limitLabel = "ボックスを出しておく数：" + std::to_string(g_boxLimit) + "個";
+            Keyboard top("アイテムレインの設定", { amountLabel, switchLabel, heightLabel, limitLabel, "もどる" });
             int c = top.Open();
             if (c == 0)
             {
@@ -388,31 +632,25 @@ namespace CTRPluginFramework
             }
             else if (c == 1)
             {
-                // アイテムスイッチ: 押すたびに ON/OFF
-                int sel = 0;
-                for (;;)
-                {
-                    std::vector<std::string> opts;
-                    for (int i = 0; i < kNumKinds; i++)
-                    {
-                        const std::string mark = g_kinds[i].on
-                            ? (Color(0x01, 0xE3, 0x0E) << std::string("[ON] "))
-                            : (Color(0x96, 0x96, 0x96) << std::string("[OFF]"));
-                        opts.push_back(mark + (Color(0xFF, 0xFF, 0xFF) << (std::string(" ") + g_kinds[i].name)));
-                    }
-                    opts.push_back("すべてON");
-                    opts.push_back("すべてOFF");
-                    opts.push_back("もどる");
-                    Keyboard kb("アイテムスイッチ\n押すとON/OFFが切り替わります", opts);
-                    kb.ChangeSelectedEntry(sel);
-                    int s = kb.Open();
-                    if (s < 0 || s == kNumKinds + 2) break;
-                    if (s == kNumKinds)          for (int i = 0; i < kNumKinds; i++) g_kinds[i].on = true;
-                    else if (s == kNumKinds + 1) for (int i = 0; i < kNumKinds; i++) g_kinds[i].on = false;
-                    else                         g_kinds[s].on = !g_kinds[s].on;
-                    sel = s;
-                }
-                RebuildTable();
+                ItemSwitchScreen();
+            }
+            else if (c == 2)
+            {
+                std::vector<std::string> opts;
+                for (int i = 0; i < 3; i++)
+                    opts.push_back(std::string(i == hSel ? "● " : "　") + heightNames[i]);
+                Keyboard kb("降らせる高さ", opts);
+                int s = kb.Open();
+                if (s >= 0 && s < 3) g_height = heightVals[s];
+            }
+            else if (c == 3)
+            {
+                std::vector<std::string> opts;
+                for (int i = 0; i < limitCount; i++)
+                    opts.push_back(std::string(limitVals[i] == g_boxLimit ? "● " : "　") + std::to_string(limitVals[i]) + "個");
+                Keyboard kb("ボックスを同時に出しておく数\n（超えると古い物から入れ替わります）", opts);
+                int s = kb.Open();
+                if (s >= 0 && s < limitCount) g_boxLimit = limitVals[s];
             }
             else
                 break;

@@ -1,5 +1,5 @@
 // MK7_Cheat Ver.6.23 / MK7_CheatUS Ver.2.01 / MK7_CheatEU Ver.1.01 By yk
-//   ->  CTRPluginFramework (.3gx) 移植版  Plugin Ver.0.0.1
+//   ->  CTRPluginFramework (.3gx) 移植版  Plugin Ver.0.0.2
 // 対象: マリオカート7 JPN(0004000000030600) / EUR(0004000000030700) / USA(0004000000030800)
 //       USA・EUR はコード名が一致するものだけ (起動時に自動判定)
 //
@@ -12,9 +12,11 @@
 #include <3ds.h>
 #include <CTRPluginFramework.hpp>
 #include <cstdio>
+#include <ctime>
 #include <string>
 #include <vector>
 #include "ItemRain.hpp"
+#include "CTRPluginFrameworkImpl/Graphics/Renderer.hpp"   // 上画面の枠の描画に使う (CTRPF 内部)
 
 namespace CTRPluginFramework
 {
@@ -687,6 +689,9 @@ namespace CTRPluginFramework
     static MenuEntry *g_entGPTimer  = nullptr;
     static MenuEntry *g_entRearView = nullptr;
     static MenuEntry *g_entTimeStop = nullptr;
+    static MenuEntry *g_entAutoAccel = nullptr;   // 0x5EBDD4〜0x5EBE08 を使う (時間停止と排他)
+    static MenuEntry *g_entJumpMash  = nullptr;
+    static MenuEntry *g_entItemRain  = nullptr;   // 空き領域 0x5EBD5C を使う (時間停止と排他)
 
     static void DisableIfOn(MenuEntry *e)
     {
@@ -1176,6 +1181,9 @@ namespace CTRPluginFramework
             DisableIfOn(g_entBalloon);
             DisableIfOn(g_entCoinRace);
             DisableIfOn(g_entMenuCut);
+            DisableIfOn(g_entAutoAccel);
+            DisableIfOn(g_entJumpMash);
+            DisableIfOn(g_entItemRain);
         }
 
         // 空き領域のコードを先に書いてからフックを張る
@@ -1194,6 +1202,43 @@ namespace CTRPluginFramework
                 W32(a, (R32(a) & 0x100) ? 0x000 : 0x100);
         }
         prev = down;
+    }
+
+    // ---------------------------------------------------------------
+    //  オートアクセル / ジャンプ連打 (日本版のみ、コード集「オートアクセル・ジャンプ連打」)
+    //  カート用の入力処理 (0x450350) の最後に割り込み、0x6BE990 のビットを押しっぱなし、
+    //  0x6BE994 のビットを押している間だけ連打にする。2つのエントリで同じ割り込みを共有する
+    // ---------------------------------------------------------------
+    static const u32 kAutoInputCode[] = {   // 0x5EBDD4〜0x5EBE08
+        0xE59F302C, 0xE5902110, 0xE593C000, 0xE182200C, 0xE593C008, 0xE28CC001, 0xE583C008,
+        0xE31C0002, 0xE593C004, 0x01C2200C, 0xE5802110, 0xE5901010, 0xEAF99185, 0x006BE990,
+    };
+
+    static void AutoInput(MenuEntry *e)
+    {
+        if (e->WasJustActivated()) DisableIfOn(g_entTimeStop);
+        const bool accel = g_entAutoAccel && g_entAutoAccel->IsActivated();
+        const bool mash  = g_entJumpMash  && g_entJumpMash->IsActivated();
+        if (!accel && !mash)
+        {
+            // OFF: 分岐を戻してから空き領域を消す
+            W32(0x0045041C, 0xE5901010);
+            for (u32 a = 0x005EBDD4; a <= 0x005EBE08; a += 4) W32(a, 0);
+            W32(0x006BE990, 0);
+            W32(0x006BE994, 0);
+            return;
+        }
+        WriteBlock(0x005EBDD4, kAutoInputCode);
+        W32(0x006BE990, accel ? 0x00000001 : 0);   // 押しっぱなし: アクセル
+        W32(0x006BE994, mash  ? 0x00004000 : 0);   // 押している間だけ連打: ドリフト・ジャンプ (R)
+        W32(0x0045041C, 0xEA066E6C);
+    }
+
+    // アイテムレイン (ItemRain.cpp): 時間停止と空き領域が重なるので排他にしてから呼ぶ
+    static void ItemRainEntry(MenuEntry *e)
+    {
+        if (e->WasJustActivated()) DisableIfOn(g_entTimeStop);
+        ItemRain(e);
     }
 
     // ---------------------------------------------------------------
@@ -1241,9 +1286,6 @@ namespace CTRPluginFramework
                                              "ボードを出したりしまったりできます");
             board->Hotkeys += Hotkey(Key::Y, "ボードを起動");
             *race += board;
-            *race += new MenuEntry(Col(0xFFCD00, "ポイント換算即終了"), ResultPointSkip,
-                                   "リザルト画面のポイントのカウントアップを\n"
-                                   "1フレームで終わらせ、すぐ次の演出に進みます");
         }
         menu += race;
 
@@ -1252,10 +1294,15 @@ namespace CTRPluginFramework
         {
             const std::string exclusive = "\nふうせんレース・コインレースは同時に使えません\n(ONにするともう片方は自動でOFFになります)";
             MenuFolder *custom = new MenuFolder(Col(0xFF8F01, "カスタムモード"));
+            g_entItemRain = new MenuEntry(Col(0x01FF8F, "アイテムレイン"), ItemRainEntry, ItemRainSettings,
+                                     "各カートの前方上空からアイテムを降らせます\n"
+                                     "キーボードアイコンから降る量とアイテムスイッチを設定\n"
+                                     "アイテムボックスを降らせるときは、レースに入る前にONにしてください\n"
+                                     "BETA の時間停止とは同時に使えません");
+            *custom += g_entItemRain;
             g_entBalloon = new MenuEntry(Col(0x001AFF, "ふうせんレース"), BalloonRace,
                                          "GPレースにふうせんバトルのルールを追加します。\n"
                                          "3つ割れるとコースアウト判定になります。\n"
-                                         "ポイントは関係ありません\n"
                                          "レースに入る前に有効にしてください" + exclusive);
             *custom += g_entBalloon;
             g_entCoinRace = new MenuEntry(Col(0xFFE701, "コインレース"), CoinRace,
@@ -1264,19 +1311,13 @@ namespace CTRPluginFramework
                                           "他の人が拾えます。順位はコインの枚数で決まります\n"
                                           "レースに入る前に有効にしてください" + exclusive);
             *custom += g_entCoinRace;
-            *custom += new MenuEntry(Col(0x01FF8F, "アイテムレイン"), ItemRain, ItemRainSettings,
-                                     "各カートの前方上空からアイテムを降らせます\n"
-                                     "キーボードアイコンから降る量とアイテムスイッチを設定");
-            MenuEntry *drop = new MenuEntry(Col(0x01FF8F, "アイテムドロップ"), ItemDropKey,
-                                            std::string("自分のカートのすぐ前にアイテムを1つずつ落とします\n")
-                                            + Col(0xFFE100, BTN_LEFT " コイン") + "\n"
-                                            + Col(0xFF8F01, BTN_RIGHT " アイテムボックス") + "\n"
-                                            + Col(0xF2F101, BTN_UP " バナナ") + "\n"
-                                            + "ボタンはホットキーのアイコンから変更できます");
-            drop->Hotkeys += Hotkey(Key::DPadLeft,  "コインを落とす");
-            drop->Hotkeys += Hotkey(Key::DPadRight, "アイテムボックスを落とす");
-            drop->Hotkeys += Hotkey(Key::DPadUp,    "バナナを落とす");
-            *custom += drop;
+            *custom += new MenuEntry(Col(0xFFCD00, "ポイント換算即終了"), ResultPointSkip,
+                                   "リザルト画面のポイントのカウントアップを\n"
+                                   "1フレームで終わらせ、すぐ次の演出に進みます");
+            *custom += new MenuEntry(Col(0xFFCD00, "CTGP-7式ライブリプレイ"), LiveReplay,
+                                     std::string("リプレイ再生前に有効にすること。\n"
+                                                 "アングルをプレイアングルとリプレイアングルに切り替えます。\n")
+                                     + Col(0xFFCD00, BTN_X " 切替"));
             menu += custom;
 
             // メニュー (日本版のみ)
@@ -1289,6 +1330,8 @@ namespace CTRPluginFramework
                                          "レース外のとき、メニュー全体を速く動かします\n"
                                          "ボタン・キャラ・画面切り替え・フェードがすべて速くなります\n"
                                          "キーボードアイコンから速度を選べます");
+            *menuFolder += new MenuEntry(Col(0xFF7700, "ポーズ制限解除"), PauseUnlock,
+                                     "カウントダウン時、ゴール直後にもポーズメニューを開けるようにします");
             menu += menuFolder;
         }
 
@@ -1336,18 +1379,22 @@ namespace CTRPluginFramework
                                  "長押しは不要です。もう一度入力で使用されます");
         *player += new MenuEntry(Col(0x01FFE1, "自動JA"), AutoJA,
                                  "ボタンを押さなくても自動でジャンプアクションします");
+        if (jp)
+        {
+            g_entAutoAccel = new MenuEntry("オートアクセル", AutoInput,
+                                           "何も押さなくてもアクセルが入り続けます\n"
+                                           "カートの操作だけに効き、メニューには影響しません\n"
+                                           "BETA の時間停止とは同時に使えません");
+            *player += g_entAutoAccel;
+            g_entJumpMash = new MenuEntry("ジャンプ連打", AutoInput,
+                                          std::string(BTN_R " を押している間、ジャンプ（ドリフトボタン）が連打になります\n")
+                                          + "カートの操作だけに効き、メニューには影響しません\n"
+                                          "BETA の時間停止とは同時に使えません");
+            *player += g_entJumpMash;
+        }
         g_entRearView = new MenuEntry(Col(0x01C7FF, "バックミラー"), RearView,
                                  Col(0x01F214, BTN_LEFT));
         *player += g_entRearView;
-        if (jp)
-        {
-            *player += new MenuEntry(Col(0xFFCD00, "CTGP-7式ライブリプレイ"), LiveReplay,
-                                     std::string("リプレイ再生前に有効にすること。\n"
-                                                 "アングルをプレイアングルとリプレイアングルに切り替えます。\n")
-                                     + Col(0xFFCD00, BTN_X " 切替"));
-            *player += new MenuEntry(Col(0xFF7700, "ポーズ制限解除"), PauseUnlock,
-                                     "カウントダウン時、ゴール直後にもポーズメニューを開けるようにします");
-        }
         menu += player;
 
         if (!jp) return;  // 以下は日本版のみ
@@ -1367,7 +1414,7 @@ namespace CTRPluginFramework
         MenuFolder *beta = new MenuFolder(Col(0xFF5C5F, "BETA"));
         g_entTimeStop = new MenuEntry(Col(0xFF5C5F, "自分以外の時間停止"), TimeStopBeta,
                                       Col(0xFF0104, "動作が不安定です") + "\n"
-                                      "GPタイマー・バックミラー・ふうせんレース・コインレース・\nメニュー高速化とは同時に使えません\n"
+                                      "GPタイマー・バックミラー・ふうせんレース・コインレース・\nメニュー高速化・オートアクセル・ジャンプ連打・\nアイテムレインとは同時に使えません\n"
                                       "(ONにすると自動でOFFになります)");
         g_entTimeStop->Hotkeys += Hotkey(Key::Y, "停止 / 解除の切り替え");
         *beta += g_entTimeStop;
@@ -1465,6 +1512,108 @@ namespace CTRPluginFramework
     }
 
     // ---------------------------------------------------------------
+    //  上画面の枠: メニューを開いている間、上画面の上下 (メニューの窓の外) に帯を描く
+    //   上の帯: 日付・時刻・バッテリー残量 / 下の帯: フレンドコード
+    // ---------------------------------------------------------------
+    static std::string g_friendCode;     // "1234-5678-9012" (取得できなければ空)
+    static bool        g_fcTried = false;
+    static bool        g_mcuOk   = false;
+    static bool        g_ptmOk   = false;
+
+    static void InitStatusBar(void)
+    {
+        g_mcuOk = R_SUCCEEDED(mcuHwcInit());   // バッテリー% (使えないときは ptm の5段階)
+        g_ptmOk = R_SUCCEEDED(ptmuInit());
+    }
+
+    static void LoadFriendCode(void)
+    {
+        if (g_fcTried) return;
+        g_fcTried = true;
+        if (R_FAILED(frdInit(true))) return;
+        FriendKey key;
+        u64 fc = 0;
+        if (R_SUCCEEDED(FRD_GetMyFriendKey(&key))
+            && R_SUCCEEDED(FRD_PrincipalIdToFriendCode(key.principalId, &fc)) && fc != 0)
+        {
+            char buf[20];
+            const u32 a = (u32)(fc / 100000000ULL), b = (u32)((fc / 10000ULL) % 10000ULL), c = (u32)(fc % 10000ULL);
+            snprintf(buf, sizeof(buf), "%04lu-%04lu-%04lu", (unsigned long)a, (unsigned long)b, (unsigned long)c);
+            g_friendCode = buf;
+        }
+        frdExit();
+    }
+
+    static std::string BatteryText(void)
+    {
+        static Clock clock;
+        static std::string text;
+        if (!text.empty() && clock.GetElapsedTime().AsSeconds() < 2.f)
+            return text;              // 2秒ごとに更新
+        clock.Restart();
+
+        u8 charging = 0;
+        if (g_ptmOk) PTMU_GetBatteryChargeState(&charging);
+        char buf[32];
+        u8 level = 0;
+        if (g_mcuOk && R_SUCCEEDED(MCUHWC_GetBatteryLevel(&level)))
+            snprintf(buf, sizeof(buf), "%u%%", level > 100 ? 100 : level);
+        else if (g_ptmOk && R_SUCCEEDED(PTMU_GetBatteryLevel(&level)))
+            snprintf(buf, sizeof(buf), "%u/5", level > 5 ? 5 : level);
+        else
+            snprintf(buf, sizeof(buf), "--");
+        text = std::string("バッテリー ") + buf + (charging ? " 充電中" : "");
+        return text;
+    }
+
+    static void DrawStatusBar(Time)
+    {
+        static const int kBarH = 20;          // メニューの窓は y=20～220 なので、その外側に描く
+        FwkSettings &st = FwkSettings::Get();
+        const Color &bg  = st.BackgroundMainColor;
+        const Color &bd  = st.BackgroundBorderColor;
+        const Color &txt = st.MainTextColor;
+
+        Renderer::SetTarget(TOP);
+        Renderer::DrawRect(0, 0, 400, kBarH, bg);
+        Renderer::DrawRect(0, kBarH - 1, 400, 1, bd);
+        Renderer::DrawRect(0, 240 - kBarH, 400, kBarH, bg);
+        Renderer::DrawRect(0, 240 - kBarH, 400, 1, bd);
+
+        // 日付・時刻 (3DS の時計は現地時刻)
+        static const char *kWeek[] = { "日", "月", "火", "水", "木", "金", "土" };
+        time_t now = time(nullptr);
+        struct tm tmv;
+        gmtime_r(&now, &tmv);
+        char date[48];
+        snprintf(date, sizeof(date), "%04d/%02d/%02d(%s) %02d:%02d:%02d",
+                 tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday, kWeek[tmv.tm_wday % 7],
+                 tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
+        int y = 2;
+        Renderer::DrawSysString(date, 6, y, 400, txt);
+
+        const std::string bat = BatteryText();
+        y = 2;
+        int bx = 394 - (int)Renderer::GetTextSize(bat.c_str());
+        Renderer::DrawSysString(bat.c_str(), bx, y, 400, txt);
+
+        // フレンドコード
+        const std::string fc = "フレンドコード  " + (g_friendCode.empty() ? std::string("取得できません") : g_friendCode);
+        y = 240 - kBarH + 2;
+        int fx = (400 - (int)Renderer::GetTextSize(fc.c_str())) / 2;
+        Renderer::DrawSysString(fc.c_str(), fx, y, 400, txt);
+    }
+
+    void RtMenuInit(PluginMenu &menu);   // RtMenu.cpp
+    void RtMenuShutdown(void);
+
+    static bool OnMenuOpening(void)
+    {
+        LoadFriendCode();
+        return true;
+    }
+
+    // ---------------------------------------------------------------
     //  CTRPF 必須関数
     // ---------------------------------------------------------------
     void PatchProcess(FwkSettings &settings)
@@ -1475,21 +1624,26 @@ namespace CTRPluginFramework
     void OnProcessExit(void)
     {
         ItemRainShutdown(); // アイテムレインのフックを外す
+        RtMenuShutdown();   // RT Menu の操作無効化を外す
     }
 
     int main(void)
     {
         DetectRegion();
-        // タイトル: txt の1行目と同じ表記 / 右上のバージョン: プラグイン Ver.0.0.1
+        // タイトル: txt の1行目と同じ表記 / 右上のバージョン: プラグイン Ver.0.0.2
         const std::string title = Col(0xFF5C5F, std::string(g_rg->cheatTitle) + " ")
                                 + Col(0xDD00FF, "By yk");
         const std::string about = std::string(g_rg->cheatTitle) + " By yk\n"
-                                + "Plugin Ver.0.0.1\n"
+                                + "Plugin Ver.0.0.2\n"
                                 + "JPN / USA / EUR 自動対応 (現在: " + g_rg->name + ")";
-        PluginMenu *menu = new PluginMenu(title, 0, 0, 1, about);
+        PluginMenu *menu = new PluginMenu(title, 0, 0, 2, about);
         menu->SynchronizeWithFrame(true);
+        InitStatusBar();
+        menu->OnOpening  = OnMenuOpening;   // フレンドコードを読む (初回のみ)
+        menu->OnNewFrame = DrawStatusBar;   // 上画面の上下の枠
         InitMenu(*menu);
         AddPluginSettings(*menu);
+        RtMenuInit(*menu);                  // RT Menu (SELECT で下画面にチート一覧)
         menu->Run();
         // ソフト終了時のクラッシュ対策:
         // delete menu でフォルダを片付ける処理 (MenuFolderImpl → ~MenuFolder) が
