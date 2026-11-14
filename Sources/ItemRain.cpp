@@ -46,11 +46,12 @@ namespace CTRPluginFramework
     };
     static const int kNumKinds = sizeof(g_kinds) / sizeof(g_kinds[0]);
 
-    static int   g_amountSel = 1;       // 量の選択 (0 少なめ / 1 ふつう / 2 多め / 3 大量)
     static u32   g_interval  = 241;     // カート更新の回数で数える（8台×60fps＝480/秒）。8で割って1余る値
     static float g_height    = 120.0f;  // 降らせる高さ
     static float g_fallSpeed = 3.0f;    // アイテムボックスの落下速度（1フレームあたり）
     static float g_boxFloat  = 15.0f;   // ボックスが止まる高さ（カートの高さ＋この値）
+    static int   g_amountSel = 1;       // 量の選択 (0 少なめ / 1 ふつう / 2 多め / 3 大量)
+    static u32   g_boxLimit  = 6;       // 降らせたボックスを同時に残す数（超えたら古い物から元の場所へ戻す）
 
     // ---- 内部状態 ----
     static bool g_installed = false;
@@ -62,6 +63,12 @@ namespace CTRPluginFramework
 
     struct Fall { u32 obj; float ground; };
     static Fall g_falls[8];
+
+    // コースから借りているボックス（元の位置を覚えておき、あとで返す）
+    struct Borrow { u32 obj; float home[3]; u32 seq; };
+    static const u32 kMaxBorrow = 16;
+    static Borrow g_borrow[kMaxBorrow];
+    static u32    g_borrowSeq = 0;
     static u32  g_lastObjDir = 0;
 
     static inline bool ValidPtr(u32 p) { return p >= 0x14000000 && p < 0x18000000 && (p & 3) == 0; }
@@ -134,11 +141,18 @@ namespace CTRPluginFramework
         }
     }
 
+    struct Borrow;
+    static void ReturnBox(Borrow &b);
+
+    // ボックスが出ているか（+0x6C の bit1。取られている間は 0）
+    static inline bool BoxPresent(u32 box) { return (*(u32 *)(box + 0x6C) & 2) != 0; }
+
     static void UpdateBoxes(u32 objDir)
     {
         if (objDir != g_lastObjDir)
         {   // レースが変わったら落下中リストを捨てる
             for (Fall &f : g_falls) f.obj = 0;
+            for (Borrow &b : g_borrow) b.obj = 0;
             g_lastObjDir = objDir;
         }
         for (Fall &f : g_falls)
@@ -151,6 +165,32 @@ namespace CTRPluginFramework
             SetBoxPos(f.obj, p[0], y, p[2]);
             if (y <= f.ground) f.obj = 0;
         }
+
+        // 取られたボックスは、その場で復活させずに元の場所へ返す
+        for (Borrow &b : g_borrow)
+        {
+            if (!b.obj) continue;
+            if (!ValidPtr(b.obj) || *(u32 *)b.obj != kVtItemBox) { b.obj = 0; continue; }
+            if (!BoxPresent(b.obj)) ReturnBox(b);
+        }
+    }
+
+    static inline bool IsBox(u32 o) { return ValidPtr(o) && *(u32 *)o == kVtItemBox; }
+
+    // 借りたボックスを元の場所へ返す
+    static void ReturnBox(Borrow &b)
+    {
+        if (IsBox(b.obj))
+        {
+            for (Fall &f : g_falls) if (f.obj == b.obj) f.obj = 0;
+            SetBoxPos(b.obj, b.home[0], b.home[1], b.home[2]);
+        }
+        b.obj = 0;
+    }
+
+    static void ReturnAllBoxes(void)
+    {
+        for (Borrow &b : g_borrow) if (b.obj) ReturnBox(b);
     }
 
     static void SpawnBox(u32 objDir, u32 rnd, const float *pos, float groundY)
@@ -160,20 +200,41 @@ namespace CTRPluginFramework
         u32 arr   = *(u32 *)(objDir + 0x4C);
         if (!ValidPtr(arr) || count == 0 || count > 0x400) return;
 
-        u32 boxes[64]; u32 n = 0;
-        for (u32 i = 0; i < count && n < 64; i++)
-        {
-            u32 o = *(u32 *)(arr + i * 4);
-            if (ValidPtr(o) && *(u32 *)o == kVtItemBox) boxes[n++] = o;
-        }
-        if (n == 0) return;
-
         Fall *slot = nullptr;
         for (Fall &f : g_falls) if (!f.obj) { slot = &f; break; }
         if (!slot) return;
 
+        u32 limit = g_boxLimit > kMaxBorrow ? kMaxBorrow : g_boxLimit;
+        if (limit == 0) return;
+
+        // 制限数に達していたら、いちばん古い物を元の場所へ返す
+        u32 used = 0; Borrow *oldest = nullptr; Borrow *freeSlot = nullptr;
+        for (Borrow &b : g_borrow)
+        {
+            if (b.obj && !IsBox(b.obj)) b.obj = 0;
+            if (b.obj) { used++; if (!oldest || b.seq < oldest->seq) oldest = &b; }
+            else if (!freeSlot) freeSlot = &b;
+        }
+        if (used >= limit && oldest) { ReturnBox(*oldest); freeSlot = oldest; }
+        if (!freeSlot) return;
+
+        // まだ借りていない（元の場所にある）ボックスから選ぶ
+        u32 boxes[64]; u32 n = 0;
+        for (u32 i = 0; i < count && n < 64; i++)
+        {
+            u32 o = *(u32 *)(arr + i * 4);
+            if (!IsBox(o)) continue;
+            bool borrowed = false;
+            for (Borrow &b : g_borrow) if (b.obj == o) { borrowed = true; break; }
+            if (!borrowed && BoxPresent(o)) boxes[n++] = o;   // 取られて消えている物は借りない
+        }
+        if (n == 0) return;
+
         u32 box = boxes[(rnd >> 4) % n];
-        for (Fall &f : g_falls) if (f.obj == box) return;   // 落下中の物は使わない
+        const float *p = (const float *)(box + 0x48);
+        freeSlot->obj = box;
+        freeSlot->home[0] = p[0]; freeSlot->home[1] = p[1]; freeSlot->home[2] = p[2];
+        freeSlot->seq = ++g_borrowSeq;
 
         SetBoxPos(box, pos[0], pos[1], pos[2]);
         slot->obj = box;
@@ -274,6 +335,7 @@ namespace CTRPluginFramework
     {
         if (g_installed) return;
         for (Fall &f : g_falls) f.obj = 0;
+        for (Borrow &b : g_borrow) b.obj = 0;
         g_lastObjDir = 0;
         g_counter = 0;
         RebuildTable();
@@ -290,6 +352,7 @@ namespace CTRPluginFramework
     {
         if (!g_installed) return;
         g_running = false;
+        ReturnAllBoxes();                       // 借りたボックスを元の場所へ
         Process::Patch(kHookAddr, kHookOrig);
         Process::Patch(kVeneerAddr,     0);
         Process::Patch(kVeneerAddr + 4, 0);
@@ -313,6 +376,8 @@ namespace CTRPluginFramework
     // ソフト終了時に呼ぶ (フックを元に戻す)
     void ItemRainShutdown(void)
     {
+        // ソフト終了中はゲームのメモリが壊れていることがあるので、ボックスは返さずにフックだけ外す
+        for (Borrow &b : g_borrow) b.obj = 0;
         Uninstall();
     }
 
@@ -325,6 +390,7 @@ namespace CTRPluginFramework
         static const u32 amountVals[] = { 481, 241, 97, 49 };
         static const char *heightNames[] = { "低い（60）", "ふつう（120）", "高い（240）" };
         static const float heightVals[] = { 60.0f, 120.0f, 240.0f };
+        static const u32 limitVals[] = { 2, 4, 6, 8, 12 };
 
         for (;;)
         {
@@ -338,7 +404,8 @@ namespace CTRPluginFramework
             for (int i = 0; i < 3; i++)
                 if (g_height == heightVals[i]) hSel = i;
             const std::string heightLabel = std::string("高さ：") + heightNames[hSel];
-            Keyboard top("アイテムレインの設定", { amountLabel, switchLabel, heightLabel, "もどる" });
+            const std::string limitLabel = "ボックスを残す数：" + std::to_string(g_boxLimit) + "個";
+            Keyboard top("アイテムレインの設定", { amountLabel, switchLabel, heightLabel, limitLabel, "もどる" });
             int c = top.Open();
             if (c == 0)
             {
@@ -390,6 +457,15 @@ namespace CTRPluginFramework
                 Keyboard kb("降らせる高さ", opts);
                 int s = kb.Open();
                 if (s >= 0 && s < 3) g_height = heightVals[s];
+            }
+            else if (c == 3)
+            {
+                std::vector<std::string> opts;
+                for (int i = 0; i < 5; i++)
+                    opts.push_back(std::string(limitVals[i] == g_boxLimit ? "● " : "　") + std::to_string(limitVals[i]) + "個");
+                Keyboard kb("降らせたボックスを同時に残す数\n（超えると古い物から元の場所へ戻ります）", opts);
+                int s = kb.Open();
+                if (s >= 0 && s < 5) g_boxLimit = limitVals[s];
             }
             else
                 break;

@@ -32,7 +32,7 @@
 | 場所 | 中身 |
 | --- | --- |
 | `Sources/main.cpp` | ほぼ全エントリとメニュー構築、カラーピッカー、Plugin設定 |
-| `Sources/ItemRain.cpp` / `Includes/ItemRain.hpp` | アイテムレイン（ユーザー作、こちらで設定画面などを追加。アイテムドロップは削除済み） |
+| `Sources/ItemRain.cpp` / `Includes/ItemRain.hpp` | アイテムレイン（ユーザー作、こちらで設定画面・終了処理を追加。アイテムドロップは削除済み）。降らせるボックスはコースから借り、残す数を超えたら・取られたら元の場所へ返す |
 | `ctrpf-patch/KeyboardImpl.cpp` / `.hpp` | 日本語キーボード入りに改造した CTRPF の内部ファイル |
 | `ctrpf-patch/patch-home.sh` | CTRPF の PluginMenuHome.cpp を sed で書き換え、下画面の「Mapper」ボタンを「FTP Server」にする（Actions で実行） |
 | `Sources/FtpServer.cpp` | FTP サーバー本体（`FtpServerMenu()`、CTRPF からは弱いシンボルで呼ばれる） |
@@ -69,7 +69,7 @@
 
 `*` = チェックを外すと OFF 値を書き戻すエントリ（`ApplyToggle` / `ApplyToggleOrdered`）。
 
-- **FTP Server**（CTRPF 下画面メニュー、全版）：ポート 5000、PASV/EPSV/PORT、ユーザー名・パスワードは何でも可、SD 全体を公開。メニュー内で動き B で停止。開始時に socInit、停止時に socExit（ゲームの通信と重ならないよう、メニュー中だけ使う）。socInit のメモリと転送バッファはヒープ領域（0x0F000000 など）に svcControlMemoryUnsafe で確保する（プラグインのメモリだと E0A01BF5）。データ接続は shutdown → 相手が閉じるのを待って close（すぐ close すると未送信分が捨てられる）
+- **FTP Server**（CTRPF 下画面メニュー、全版）：ポート 5000、PASV/EPSV/PORT、ユーザー名・パスワードは何でも可、SD 全体を公開。メニュー内で動き B で停止。開始時に socInit、停止時に socExit（ゲームの通信と重ならないよう、メニュー中だけ使う）。socInit のメモリと転送バッファはヒープ領域（0x0F000000 など）に svcControlMemoryUnsafe で確保する（プラグインのメモリだと E0A01BF5）。データ接続は shutdown → 相手が閉じるのを待って close（すぐ close すると未送信分が捨てられる）。STOR 後に読み返して大きさ・合計を確認し画面に表示。RNTO は行き先があれば消してから変える。**上書きが反映されない報告あり（調査中）**
 - **RT Menu**（全版）：開くボタン（初期値 SELECT）でいつでも開閉、十字キー・A・B で操作。OSD で下画面に描画（項目数ぶんの高さだけ）。GameFunc のないエントリ、それしかないフォルダ、Miiの色変更・BETA は出さない。名前は色コードを除いて表示、幅は文字が収まる最小。開いている間だけコード集の「操作を受け付けなくする」（0x4522D0 / 0x44774C / 0x45035C、日本版のみ）を適用。CTRPF 下画面メニューの「RT Menu」ボタン（Game Guide を置き換え）は設定画面（有効/無効・開くボタン、`MK7_Cheat_rtmenu.bin` に保存）。
 
 ## 6. 空き領域と排他（新しいコードを足す前に必ず確認）

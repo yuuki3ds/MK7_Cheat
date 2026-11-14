@@ -408,6 +408,8 @@ namespace CTRPluginFramework
             Draw();
 
             bool ok = true;
+            const u64 start = off;
+            u32 sum = 0;
             for (;;)
             {
                 if (!WaitFd(fd, POLLIN, kTimeoutMs)) { ok = false; break; }
@@ -420,13 +422,47 @@ namespace CTRPluginFramework
                     break;
                 }
                 u32 wr = 0;
-                if (R_FAILED(FSFILE_Write(h, &wr, off, g_xferBuf, (u32)n, 0)) || wr != (u32)n) { ok = false; break; }
+                for (ssize_t i = 0; i < n; i++) sum += g_xferBuf[i];
+                Result wres = FSFILE_Write(h, &wr, off, g_xferBuf, (u32)n, 0);
+                if (R_FAILED(wres) || wr != (u32)n)
+                {
+                    char e[48];
+                    snprintf(e, sizeof(e), "書き込み失敗 %08lX", (unsigned long)wres);
+                    Log(e);
+                    ok = false;
+                    break;
+                }
                 off += n;
             }
             FSFILE_Flush(h);   // SD に確実に書き出してから閉じる
             FSFILE_Close(h);
             CloseData(fd);
-            Reply(ok ? "226 Transfer complete." : "426 Transfer aborted.");
+
+            // 書けたか確認: 閉じたあと開き直して、大きさと中身の合計を比べる
+            if (ok)
+            {
+                u64 size = 0; u32 sum2 = 0;
+                Handle r;
+                if (R_SUCCEEDED(OpenFileR(r, path)))
+                {
+                    FSFILE_GetSize(r, &size);
+                    for (u64 pos = start; pos < size; )
+                    {
+                        u32 rd = 0;
+                        if (R_FAILED(FSFILE_Read(r, &rd, pos, g_xferBuf, kXferBufSize)) || rd == 0) break;
+                        for (u32 i = 0; i < rd; i++) sum2 += g_xferBuf[i];
+                        pos += rd;
+                    }
+                    FSFILE_Close(r);
+                }
+                char m[96];
+                snprintf(m, sizeof(m), "受信 %llu バイト / 保存 %llu バイト%s",
+                         (unsigned long long)(off - start), (unsigned long long)size,
+                         (size == off && sum == sum2) ? "（一致）" : "（不一致）");
+                Log(m);
+                if (size != off || sum != sum2) ok = false;
+            }
+            Reply(ok ? "226 Transfer complete." : "451 Write verification failed.");
         }
 
         // ---------------------------------------------------------------
@@ -491,6 +527,13 @@ namespace CTRPluginFramework
             else if (cmd == "NLST")   SendList(arg, true);
             else if (cmd == "RETR")   SendFile(arg);
             else if (cmd == "STOR")   RecvFile(arg);
+            else if (cmd == "APPE")
+            {
+                Handle h; u64 size = 0;
+                if (R_SUCCEEDED(OpenFileR(h, Resolve(arg)))) { FSFILE_GetSize(h, &size); FSFILE_Close(h); }
+                g_restOffset = size;
+                RecvFile(arg);
+            }
             else if (cmd == "REST")   { g_restOffset = strtoull(arg.c_str(), nullptr, 10); Reply("350 OK."); }
             else if (cmd == "SIZE")
             {
@@ -527,14 +570,27 @@ namespace CTRPluginFramework
                 const std::string to = Resolve(arg);
                 std::vector<u16> a = ToUtf16(g_renameFrom), b = ToUtf16(to);
                 const FS_Path pa = fsMakePath(PATH_UTF16, a.data()), pb = fsMakePath(PATH_UTF16, b.data());
-                Result r = IsDir(g_renameFrom) ? FSUSER_RenameDirectory(g_sdmc, pa, g_sdmc, pb)
-                                               : FSUSER_RenameFile(g_sdmc, pa, g_sdmc, pb);
+                Result r;
+                if (IsDir(g_renameFrom))
+                    r = FSUSER_RenameDirectory(g_sdmc, pa, g_sdmc, pb);
+                else
+                {
+                    // 一時ファイルに送ってから名前を変えるクライアント向け: 行き先があれば消してから変える
+                    Handle t;
+                    if (to != g_renameFrom && R_SUCCEEDED(OpenFileR(t, to)))
+                    {
+                        FSFILE_Close(t);
+                        FSUSER_DeleteFile(g_sdmc, pb);
+                    }
+                    r = FSUSER_RenameFile(g_sdmc, pa, g_sdmc, pb);
+                }
+                Log(std::string(R_SUCCEEDED(r) ? "名前変更: " : "名前変更失敗: ") + to);
                 g_renameFrom.clear();
                 Reply(R_SUCCEEDED(r) ? "250 Renamed." : "550 Can't rename.");
             }
             else if (cmd == "ABOR")   Reply("226 OK.");
             else if (cmd == "QUIT")   { Reply("221 Bye."); CloseSock(g_ctrl); }
-            else                      Reply("502 Command not implemented.");
+            else                      { Log("未対応のコマンド: " + cmd); Reply("502 Command not implemented."); }
         }
 
         void Poll(void)
