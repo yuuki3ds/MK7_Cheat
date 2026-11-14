@@ -8,6 +8,8 @@
 #include <CTRPluginFramework.hpp>
 #include "CTRPluginFrameworkImpl/Graphics/Renderer.hpp"
 #include "CTRPluginFrameworkImpl/Graphics/Window.hpp"
+#include "CTRPluginFrameworkImpl/Preferences.hpp"
+#include "CTRPluginFrameworkImpl/System/FSPath.hpp"
 #include "csvc.h"
 
 #include <arpa/inet.h>
@@ -109,7 +111,15 @@ namespace CTRPluginFramework
             Renderer::DrawSysString("PC やスマホの FTP クライアントから", 40, y, 280, txt);
             Renderer::DrawSysString("上画面のアドレスに接続してください", 40, y, 280, txt);
             Renderer::DrawSysString("SD カード全体を読み書きできます", 40, y, 280, txt);
-            y += 20;
+            y += 6;
+            // CTRPF が読んでいる AR コードのファイル (プラグインのフォルダの cheats.txt が優先)
+            {
+                std::string f = Preferences::CheatsFile;
+                if (!f.empty() && f[0] != '/') f = FSPath::CurrentWorkingDirectory + f;
+                Renderer::DrawSysString("AR コードのファイル:", 40, y, 290, txt);
+                Renderer::DrawSysString(f.c_str(), 40, y, 300, ok);
+            }
+            y += 4;
             Renderer::DrawSysString(" で停止", 40, y, 280, ok);
             Renderer::EndFrame();
         }

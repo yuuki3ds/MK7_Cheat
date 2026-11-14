@@ -1294,6 +1294,12 @@ namespace CTRPluginFramework
         {
             const std::string exclusive = "\nふうせんレース・コインレースは同時に使えません\n(ONにするともう片方は自動でOFFになります)";
             MenuFolder *custom = new MenuFolder(Col(0xFF8F01, "カスタムモード"));
+            g_entItemRain = new MenuEntry(Col(0x01FF8F, "アイテムレイン"), ItemRainEntry, ItemRainSettings,
+                                     "各カートの前方上空からアイテムを降らせます\n"
+                                     "キーボードアイコンから降る量とアイテムスイッチを設定\n"
+                                     "アイテムボックスを降らせるときは、レースに入る前にONにしてください\n"
+                                     "BETA の時間停止とは同時に使えません");
+            *custom += g_entItemRain;
             g_entBalloon = new MenuEntry(Col(0x001AFF, "ふうせんレース"), BalloonRace,
                                          "GPレースにふうせんバトルのルールを追加します。\n"
                                          "3つ割れるとコースアウト判定になります。\n"
@@ -1308,12 +1314,6 @@ namespace CTRPluginFramework
             *custom += new MenuEntry(Col(0xFFCD00, "ポイント換算即終了"), ResultPointSkip,
                                    "リザルト画面のポイントのカウントアップを\n"
                                    "1フレームで終わらせ、すぐ次の演出に進みます");
-            g_entItemRain = new MenuEntry(Col(0x01FF8F, "アイテムレイン"), ItemRainEntry, ItemRainSettings,
-                                     "各カートの前方上空からアイテムを降らせます\n"
-                                     "キーボードアイコンから降る量とアイテムスイッチを設定\n"
-                                     "アイテムボックスを降らせるときは、レースに入る前にONにしてください\n"
-                                     "BETA の時間停止とは同時に使えません");
-            *custom += g_entItemRain;
             *custom += new MenuEntry(Col(0xFFCD00, "CTGP-7式ライブリプレイ"), LiveReplay,
                                      std::string("リプレイ再生前に有効にすること。\n"
                                                  "アングルをプレイアングルとリプレイアングルに切り替えます。\n")

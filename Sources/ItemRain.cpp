@@ -38,7 +38,7 @@ namespace CTRPluginFramework
     static const u32 kListVeneer    = 0x005EBD2C;   // ldr pc, [pc, #0x28] → 0x5EBD5C の値へ
     static const u32 kListVeneerLit = 0x005EBD5C;
     static const u16 kObjIdItemBox  = 4;            // 配置データ上のアイテムボックスの番号
-    static const u32 kNumSpare      = 12;           // 余分に作らせる数
+    static const u32 kNumSpare      = 32;           // 余分に作らせる数
     static const float kParkDepth   = 2000.0f;      // 予備を隠しておく深さ（元の位置の真下）
 
     enum { KIND_COIN = 0x10, KIND_BOX = 0x11 };
@@ -66,7 +66,7 @@ namespace CTRPluginFramework
     static float g_fallSpeed = 3.0f;    // アイテムボックスの落下速度（1フレームあたり）
     static float g_boxFloat  = 15.0f;   // ボックスが止まる高さ（カートの高さ＋この値）
     static int   g_amountSel = 1;       // 量の選択 (0 少なめ / 1 ふつう / 2 多め / 3 大量)
-    static u32   g_boxLimit  = 6;       // 降らせたボックスを同時に残す数（超えたら古い物から元の場所へ戻す）
+    static u32   g_boxLimit  = 16;      // 降らせたボックスを同時に残す数（超えたら古い物から元の場所へ戻す）
 
     // ---- 内部状態 ----
     static bool g_installed = false;
@@ -77,11 +77,11 @@ namespace CTRPluginFramework
     static int  g_tableLen  = 0;
 
     struct Fall { u32 obj; float ground; };
-    static Fall g_falls[8];
+    static Fall g_falls[16];
 
     // コースから借りているボックス（元の位置を覚えておき、あとで返す）
     struct Borrow { u32 obj; float home[3]; u32 seq; };
-    static const u32 kMaxBorrow = 16;
+    static const u32 kMaxBorrow = 64;
     static Borrow g_borrow[kMaxBorrow];
     static u32    g_borrowSeq = 0;
     static u32  g_lastObjDir = 0;
@@ -230,7 +230,18 @@ namespace CTRPluginFramework
         for (Fall &f : g_falls) if (!f.obj) { slot = &f; break; }
         if (!slot) return;
 
-        u32 limit = g_boxLimit > kMaxBorrow ? kMaxBorrow : g_boxLimit;
+        // 予備のボックスがあれば、それだけを使う（コースのボックスには触らない）。
+        // 予備がないコースでは、コースのボックスを借りる。
+        bool haveSpare = false;
+        for (u32 i = 0; i < count; i++)
+        {
+            u32 o = *(u32 *)(arr + i * 4);
+            if (IsBox(o) && IsSpareEntry(*(u32 *)(o + 8))) { haveSpare = true; break; }
+        }
+
+        // 同時に出しておく数。予備がないコースでは、コースのボックスを借りすぎないよう6個まで。
+        u32 cap   = haveSpare ? kNumSpare : 6;
+        u32 limit = g_boxLimit > cap ? cap : g_boxLimit;
         if (limit == 0) return;
 
         // 制限数に達していたら、いちばん古い物を元の場所へ返す
@@ -243,15 +254,6 @@ namespace CTRPluginFramework
         }
         if (used >= limit && oldest) { ReturnBox(*oldest); freeSlot = oldest; }
         if (!freeSlot) return;
-
-        // 予備のボックスがあれば、それだけを使う（コースのボックスには触らない）。
-        // 予備がないコースでは、コースのボックスを借りる。
-        bool haveSpare = false;
-        for (u32 i = 0; i < count; i++)
-        {
-            u32 o = *(u32 *)(arr + i * 4);
-            if (IsBox(o) && IsSpareEntry(*(u32 *)(o + 8))) { haveSpare = true; break; }
-        }
 
         u32 boxes[64]; u32 n = 0;
         for (u32 i = 0; i < count && n < 64; i++)
@@ -596,7 +598,8 @@ namespace CTRPluginFramework
         static const u32 amountVals[] = { 481, 241, 97, 49 };
         static const char *heightNames[] = { "低い（60）", "ふつう（120）", "高い（240）" };
         static const float heightVals[] = { 60.0f, 120.0f, 240.0f };
-        static const u32 limitVals[] = { 2, 4, 6, 8, 12 };
+        static const u32 limitVals[] = { 4, 8, 12, 16, 24, 32 };
+        const int limitCount = sizeof(limitVals) / sizeof(limitVals[0]);
 
         for (;;)
         {
@@ -610,7 +613,7 @@ namespace CTRPluginFramework
             for (int i = 0; i < 3; i++)
                 if (g_height == heightVals[i]) hSel = i;
             const std::string heightLabel = std::string("高さ：") + heightNames[hSel];
-            const std::string limitLabel = "ボックスを残す数：" + std::to_string(g_boxLimit) + "個";
+            const std::string limitLabel = "ボックスを出しておく数：" + std::to_string(g_boxLimit) + "個";
             Keyboard top("アイテムレインの設定", { amountLabel, switchLabel, heightLabel, limitLabel, "もどる" });
             int c = top.Open();
             if (c == 0)
@@ -643,11 +646,11 @@ namespace CTRPluginFramework
             else if (c == 3)
             {
                 std::vector<std::string> opts;
-                for (int i = 0; i < 5; i++)
+                for (int i = 0; i < limitCount; i++)
                     opts.push_back(std::string(limitVals[i] == g_boxLimit ? "● " : "　") + std::to_string(limitVals[i]) + "個");
-                Keyboard kb("降らせたボックスを同時に残す数\n（超えると古い物から元の場所へ戻ります）", opts);
+                Keyboard kb("ボックスを同時に出しておく数\n（超えると古い物から入れ替わります）", opts);
                 int s = kb.Open();
-                if (s >= 0 && s < 5) g_boxLimit = limitVals[s];
+                if (s >= 0 && s < limitCount) g_boxLimit = limitVals[s];
             }
             else
                 break;
