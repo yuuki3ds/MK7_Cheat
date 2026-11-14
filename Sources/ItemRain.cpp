@@ -1,9 +1,12 @@
 // アイテムレイン（プラグイン版） MK7 日本版 Ver1.2 (0004000000030600) 専用
 // アイテム／コイン／アイテムボックスを各カートの前方上空から降らせる。
 // ARコード版アイテムレイン（002D9668 のフック）とは同時に使えないので、AR版はOFFにすること。
+// 予備のアイテムボックスはコースの読み込み時に作らせるので、レースに入る前（メニュー中）にONにしておくこと。
+// 空き領域は 0x5EBD24〜0x5EBD2C と 0x5EBD5C を使う。
 //
 // main.cpp のカスタムモードフォルダに「アイテムレイン」として登録済み (日本版のみ)。
 // ソフト終了時は OnProcessExit から ItemRainShutdown() を呼び、フックを外す。
+// 空き領域 0x5EBD5C は BETA の時間停止 (0x5EBD30〜0x5EBF2C) と重なるので、main.cpp で排他にしている。
 
 #include <3ds.h>
 #include <CTRPluginFramework.hpp>
@@ -28,6 +31,15 @@ namespace CTRPluginFramework
     static const u32 kFnCoinStart   = 0x004203A4;   // (coinObj, pos*)
     static const u32 kVtItemBox     = 0x0062EFA8;
     static const u32 kFnBroadUpdate = 0x003DB3BC;   // (登録, 位置*, 半径) 絞り込み表の更新
+
+    // 予備のボックスを作らせるためのフック（コースの物体を作る処理 0x36CADC の中）
+    static const u32 kListHookAddr  = 0x0036CB3C;   // ldr r9, [r4, #0x2c]（配置一覧を読む）
+    static const u32 kListHookOrig  = 0xE594902C;
+    static const u32 kListVeneer    = 0x005EBD2C;   // ldr pc, [pc, #0x28] → 0x5EBD5C の値へ
+    static const u32 kListVeneerLit = 0x005EBD5C;
+    static const u16 kObjIdItemBox  = 4;            // 配置データ上のアイテムボックスの番号
+    static const u32 kNumSpare      = 12;           // 余分に作らせる数
+    static const float kParkDepth   = 2000.0f;      // 予備を隠しておく深さ（元の位置の真下）
 
     enum { KIND_COIN = 0x10, KIND_BOX = 0x11 };
 
@@ -73,6 +85,17 @@ namespace CTRPluginFramework
     static Borrow g_borrow[kMaxBorrow];
     static u32    g_borrowSeq = 0;
     static u32  g_lastObjDir = 0;
+
+    // 予備のボックス用の配置データ（ゲームに読ませる偽の一覧）
+    static u8  g_fakeList[0x40]  __attribute__((aligned(4)));
+    static u32 g_fakeArr[1024 + kNumSpare];
+    static u8  g_fakeEntry[kNumSpare][0x40] __attribute__((aligned(4)));
+    static u8  g_fakeGobj[kNumSpare][0x40]  __attribute__((aligned(4)));
+
+    static inline bool IsSpareEntry(u32 e)
+    {
+        return e >= (u32)&g_fakeEntry[0][0] && e < (u32)&g_fakeEntry[0][0] + sizeof(g_fakeEntry);
+    }
 
     static inline bool ValidPtr(u32 p) { return p >= 0x14000000 && p < 0x18000000 && (p & 3) == 0; }
 
@@ -221,12 +244,21 @@ namespace CTRPluginFramework
         if (used >= limit && oldest) { ReturnBox(*oldest); freeSlot = oldest; }
         if (!freeSlot) return;
 
-        // まだ借りていない（元の場所にある）ボックスから選ぶ
+        // 予備のボックスがあれば、それだけを使う（コースのボックスには触らない）。
+        // 予備がないコースでは、コースのボックスを借りる。
+        bool haveSpare = false;
+        for (u32 i = 0; i < count; i++)
+        {
+            u32 o = *(u32 *)(arr + i * 4);
+            if (IsBox(o) && IsSpareEntry(*(u32 *)(o + 8))) { haveSpare = true; break; }
+        }
+
         u32 boxes[64]; u32 n = 0;
         for (u32 i = 0; i < count && n < 64; i++)
         {
             u32 o = *(u32 *)(arr + i * 4);
             if (!IsBox(o)) continue;
+            if (haveSpare && !IsSpareEntry(*(u32 *)(o + 8))) continue;
             bool borrowed = false;
             for (Borrow &b : g_borrow) if (b.obj == o) { borrowed = true; break; }
             if (!borrowed && BoxPresent(o)) boxes[n++] = o;   // 取られて消えている物は借りない
@@ -313,6 +345,67 @@ namespace CTRPluginFramework
         }
     }
 
+    // ---- コース読み込み時：配置一覧に予備のボックスを足す ----
+    // 元の一覧を写し、最初に見つかったアイテムボックスの項目を kNumSpare 個ぶん複製して末尾に足す。
+    // 複製は元のボックスの真下（kParkDepth 下）に置く。作る処理はゲーム本来のもの。
+    extern "C" u32 ItemRain_BuildList(u32 list)
+    {
+        if (!g_installed || !ValidPtr(list)) return list;
+        u32 count = *(u16 *)(list + 4);
+        u32 arr   = *(u32 *)(list + 0x14);
+        if (!ValidPtr(arr) || count == 0 || count > 1024) return list;
+
+        u32 src = 0;
+        for (u32 i = 0; i < count; i++)
+        {
+            u32 e = *(u32 *)(arr + i * 4);
+            if (!ValidPtr(e)) return list;
+            u32 g = *(u32 *)e;
+            if (!ValidPtr(g)) return list;
+            if (!src && *(u16 *)g == kObjIdItemBox) src = e;
+            g_fakeArr[i] = e;
+        }
+        if (!src) return list;                      // ボックスのないコースでは何もしない
+
+        for (u32 k = 0; k < kNumSpare; k++)
+        {
+            for (u32 b = 0; b < 0x40; b++)
+            {
+                g_fakeEntry[k][b] = *(u8 *)(src + b);
+                g_fakeGobj[k][b]  = *(u8 *)(*(u32 *)src + b);
+            }
+            *(u32 *)&g_fakeEntry[k][0] = (u32)&g_fakeGobj[k][0];
+            float *pos = (float *)&g_fakeGobj[k][4];        // 配置データの位置（x, y, z）
+            pos[1] -= kParkDepth;
+            g_fakeArr[count + k] = (u32)&g_fakeEntry[k][0];
+        }
+        for (u32 b = 0; b < sizeof(g_fakeList); b++) g_fakeList[b] = *(u8 *)(list + b);
+        *(u16 *)&g_fakeList[4]    = (u16)(count + kNumSpare);
+        *(u32 *)&g_fakeList[0x14] = (u32)&g_fakeArr[0];
+        return (u32)&g_fakeList[0];
+    }
+
+    extern "C" void ItemRain_ListStub(void);
+    __asm__(
+        ".arm\n"
+        ".align 2\n"
+        ".global ItemRain_ListStub\n"
+        ".type ItemRain_ListStub, %function\n"
+        "ItemRain_ListStub:\n"
+        "    push  {r0-r3, r12, lr}\n"
+        "    vpush {d0-d7}\n"
+        "    ldr   r0, [r4, #0x2c]\n"      // 上書きした元の命令が読む値
+        "    mov   r9, sp\n"               // r9 はこのあと上書きするので自由に使える
+        "    bic   sp, sp, #7\n"
+        "    bl    ItemRain_BuildList\n"
+        "    mov   sp, r9\n"
+        "    mov   r9, r0\n"
+        "    vpop  {d0-d7}\n"
+        "    pop   {r0-r3, r12, lr}\n"
+        "    ldr   pc, =0x0036CB40\n"
+        "    .ltorg\n"
+    );
+
     // ---- フック用スタブ（ARM） ----
     extern "C" void ItemRain_Stub(void);
     __asm__(
@@ -348,6 +441,12 @@ namespace CTRPluginFramework
         // b kVeneerAddr
         u32 br = 0xEA000000 | (((kVeneerAddr - kHookAddr - 8) >> 2) & 0x00FFFFFF);
         Process::Patch(kHookAddr, br);
+
+        // 予備のボックス用のフック
+        Process::Patch(kListVeneer,    0xE59FF028);
+        Process::Patch(kListVeneerLit, (u32)ItemRain_ListStub);
+        u32 br2 = 0xEA000000 | (((kListVeneer - kListHookAddr - 8) >> 2) & 0x00FFFFFF);
+        Process::Patch(kListHookAddr, br2);
         g_installed = true;
     }
 
@@ -359,6 +458,9 @@ namespace CTRPluginFramework
         Process::Patch(kHookAddr, kHookOrig);
         Process::Patch(kVeneerAddr,     0);
         Process::Patch(kVeneerAddr + 4, 0);
+        Process::Patch(kListHookAddr, kListHookOrig);
+        Process::Patch(kListVeneer,    0);
+        Process::Patch(kListVeneerLit, 0);
         g_installed = false;
     }
 

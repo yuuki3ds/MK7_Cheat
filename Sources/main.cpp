@@ -1,5 +1,5 @@
 // MK7_Cheat Ver.6.23 / MK7_CheatUS Ver.2.01 / MK7_CheatEU Ver.1.01 By yk
-//   ->  CTRPluginFramework (.3gx) 移植版  Plugin Ver.0.0.1
+//   ->  CTRPluginFramework (.3gx) 移植版  Plugin Ver.0.0.2
 // 対象: マリオカート7 JPN(0004000000030600) / EUR(0004000000030700) / USA(0004000000030800)
 //       USA・EUR はコード名が一致するものだけ (起動時に自動判定)
 //
@@ -691,6 +691,7 @@ namespace CTRPluginFramework
     static MenuEntry *g_entTimeStop = nullptr;
     static MenuEntry *g_entAutoAccel = nullptr;   // 0x5EBDD4〜0x5EBE08 を使う (時間停止と排他)
     static MenuEntry *g_entJumpMash  = nullptr;
+    static MenuEntry *g_entItemRain  = nullptr;   // 空き領域 0x5EBD5C を使う (時間停止と排他)
 
     static void DisableIfOn(MenuEntry *e)
     {
@@ -1182,6 +1183,7 @@ namespace CTRPluginFramework
             DisableIfOn(g_entMenuCut);
             DisableIfOn(g_entAutoAccel);
             DisableIfOn(g_entJumpMash);
+            DisableIfOn(g_entItemRain);
         }
 
         // 空き領域のコードを先に書いてからフックを張る
@@ -1230,6 +1232,13 @@ namespace CTRPluginFramework
         W32(0x006BE990, accel ? 0x00000001 : 0);   // 押しっぱなし: アクセル
         W32(0x006BE994, mash  ? 0x00004000 : 0);   // 押している間だけ連打: ドリフト・ジャンプ (R)
         W32(0x0045041C, 0xEA066E6C);
+    }
+
+    // アイテムレイン (ItemRain.cpp): 時間停止と空き領域が重なるので排他にしてから呼ぶ
+    static void ItemRainEntry(MenuEntry *e)
+    {
+        if (e->WasJustActivated()) DisableIfOn(g_entTimeStop);
+        ItemRain(e);
     }
 
     // ---------------------------------------------------------------
@@ -1299,9 +1308,12 @@ namespace CTRPluginFramework
             *custom += new MenuEntry(Col(0xFFCD00, "ポイント換算即終了"), ResultPointSkip,
                                    "リザルト画面のポイントのカウントアップを\n"
                                    "1フレームで終わらせ、すぐ次の演出に進みます");
-            *custom += new MenuEntry(Col(0x01FF8F, "アイテムレイン"), ItemRain, ItemRainSettings,
+            g_entItemRain = new MenuEntry(Col(0x01FF8F, "アイテムレイン"), ItemRainEntry, ItemRainSettings,
                                      "各カートの前方上空からアイテムを降らせます\n"
-                                     "キーボードアイコンから降る量とアイテムスイッチを設定");
+                                     "キーボードアイコンから降る量とアイテムスイッチを設定\n"
+                                     "アイテムボックスを降らせるときは、レースに入る前にONにしてください\n"
+                                     "BETA の時間停止とは同時に使えません");
+            *custom += g_entItemRain;
             *custom += new MenuEntry(Col(0xFFCD00, "CTGP-7式ライブリプレイ"), LiveReplay,
                                      std::string("リプレイ再生前に有効にすること。\n"
                                                  "アングルをプレイアングルとリプレイアングルに切り替えます。\n")
@@ -1402,7 +1414,7 @@ namespace CTRPluginFramework
         MenuFolder *beta = new MenuFolder(Col(0xFF5C5F, "BETA"));
         g_entTimeStop = new MenuEntry(Col(0xFF5C5F, "自分以外の時間停止"), TimeStopBeta,
                                       Col(0xFF0104, "動作が不安定です") + "\n"
-                                      "GPタイマー・バックミラー・ふうせんレース・コインレース・\nメニュー高速化・オートアクセル・ジャンプ連打とは\n同時に使えません\n"
+                                      "GPタイマー・バックミラー・ふうせんレース・コインレース・\nメニュー高速化・オートアクセル・ジャンプ連打・\nアイテムレインとは同時に使えません\n"
                                       "(ONにすると自動でOFFになります)");
         g_entTimeStop->Hotkeys += Hotkey(Key::Y, "停止 / 解除の切り替え");
         *beta += g_entTimeStop;
@@ -1618,13 +1630,13 @@ namespace CTRPluginFramework
     int main(void)
     {
         DetectRegion();
-        // タイトル: txt の1行目と同じ表記 / 右上のバージョン: プラグイン Ver.0.0.1
+        // タイトル: txt の1行目と同じ表記 / 右上のバージョン: プラグイン Ver.0.0.2
         const std::string title = Col(0xFF5C5F, std::string(g_rg->cheatTitle) + " ")
                                 + Col(0xDD00FF, "By yk");
         const std::string about = std::string(g_rg->cheatTitle) + " By yk\n"
-                                + "Plugin Ver.0.0.1\n"
+                                + "Plugin Ver.0.0.2\n"
                                 + "JPN / USA / EUR 自動対応 (現在: " + g_rg->name + ")";
-        PluginMenu *menu = new PluginMenu(title, 0, 0, 1, about);
+        PluginMenu *menu = new PluginMenu(title, 0, 0, 2, about);
         menu->SynchronizeWithFrame(true);
         InitStatusBar();
         menu->OnOpening  = OnMenuOpening;   // フレンドコードを読む (初回のみ)
