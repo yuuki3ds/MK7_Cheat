@@ -10,6 +10,9 @@
 #include <string>
 #include <vector>
 #include "ItemRain.hpp"
+#include "ItemIcons.hpp"
+#include "CTRPluginFrameworkImpl/Graphics/Renderer.hpp"
+#include "CTRPluginFrameworkImpl/Graphics/Window.hpp"
 
 namespace CTRPluginFramework
 {
@@ -381,6 +384,107 @@ namespace CTRPluginFramework
         Uninstall();
     }
 
+    // ---- アイテムスイッチ (アイコンを並べた1画面。十字キー＋A かタッチで ON/OFF) ----
+    static void DrawIcon(int idx, int x, int y, bool on)
+    {
+        const u8 *p = kItemIcons[idx];
+        for (int j = 0; j < kItemIconSize; j++)
+            for (int i = 0; i < kItemIconSize; i++, p += 3)
+            {
+                u8 r = p[0], g = p[1], b = p[2];
+                if (!on)
+                {   // OFF は暗い灰色にする
+                    const u8 l = (u8)((r * 30 + g * 59 + b * 11) / 100);
+                    r = g = b = (u8)(l / 3 + 30);
+                }
+                Renderer::DrawPixel(x + i, y + j, Color(r, g, b));
+            }
+    }
+
+    static void ItemSwitchScreen(void)
+    {
+        const int cols = 4, cell = 56, box = 44;
+        const int gx = 20 + (280 - cols * cell) / 2 + (cell - box) / 2;
+        const int gy = 30;
+        const int slots = kNumKinds + 1;          // 最後の枠は「すべて ON / OFF」
+        static const Color onC(0x01, 0xE3, 0x0E), offC(0x50, 0x50, 0x50), cur(0xFF, 0xE1, 0x00);
+        int sel = 0;
+        bool wasTouch = true;                      // 開いた瞬間のタッチは無視
+
+        auto toggle = [&](int i)
+        {
+            if (i < kNumKinds) g_kinds[i].on = !g_kinds[i].on;
+            else
+            {
+                bool any = false;
+                for (int k = 0; k < kNumKinds; k++) any |= g_kinds[k].on;
+                for (int k = 0; k < kNumKinds; k++) g_kinds[k].on = !any;
+            }
+        };
+
+        for (;;)
+        {
+            Controller::Update();
+            if (Controller::IsKeyPressed(Key::B)) break;
+            if (Controller::IsKeyPressed(Key::DPadLeft))  sel = (sel + slots - 1) % slots;
+            if (Controller::IsKeyPressed(Key::DPadRight)) sel = (sel + 1) % slots;
+            if (Controller::IsKeyPressed(Key::DPadUp))    sel = (sel - cols + slots * 2) % slots;
+            if (Controller::IsKeyPressed(Key::DPadDown))  sel = (sel + cols) % slots;
+            if (Controller::IsKeyPressed(Key::A)) toggle(sel);
+            if (Controller::IsKeyPressed(Key::X)) for (int k = 0; k < kNumKinds; k++) g_kinds[k].on = true;
+            if (Controller::IsKeyPressed(Key::Y)) for (int k = 0; k < kNumKinds; k++) g_kinds[k].on = false;
+
+            const bool touch = Touch::IsDown();
+            if (touch && !wasTouch)
+            {
+                const IntVector t(Touch::GetPosition());
+                for (int i = 0; i < slots; i++)
+                {
+                    const int x = gx + (i % cols) * cell, y = gy + (i / cols) * cell;
+                    if (t.x >= x && t.x < x + box && t.y >= y && t.y < y + box) { sel = i; toggle(i); break; }
+                }
+            }
+            wasTouch = touch;
+
+            // 上画面: 説明
+            int onCount = 0;
+            for (int k = 0; k < kNumKinds; k++) if (g_kinds[k].on) onCount++;
+            const Color &txt = FwkSettings::Get().MainTextColor;
+            Renderer::SetTarget(TOP);
+            Window::TopWindow.Draw("アイテムスイッチ");
+            int y = 50;
+            const std::string cnt = std::to_string(onCount) + " / " + std::to_string(kNumKinds) + " 種類 ON";
+            Renderer::DrawSysString(cnt.c_str(), 40, y, 360, txt);
+            y += 10;
+            Renderer::DrawSysString("\uE000 / タッチ：ON・OFF の切り替え", 40, y, 360, txt);
+            Renderer::DrawSysString("\uE002：すべて ON　\uE003：すべて OFF", 40, y, 360, txt);
+            Renderer::DrawSysString("\uE001：もどる", 40, y, 360, txt);
+
+            // 下画面: アイコン
+            Renderer::SetTarget(BOTTOM);
+            Window::BottomWindow.Draw();
+            for (int i = 0; i < slots; i++)
+            {
+                const int x = gx + (i % cols) * cell, yy = gy + (i / cols) * cell;
+                const bool on = i < kNumKinds ? g_kinds[i].on : (onCount > 0);
+                if (i == sel) Renderer::DrawRect(x - 3, yy - 3, box + 6, box + 6, cur);
+                Renderer::DrawRect(x, yy, box, box, on ? onC : offC);
+                Renderer::DrawRect(x + 2, yy + 2, box - 4, box - 4, Color(0xFF, 0xFF, 0xFF));
+                const int o = (box - kItemIconSize) / 2;
+                if (i < kNumKinds) DrawIcon(i, x + o, yy + o, g_kinds[i].on);
+                else
+                {
+                    int ty = yy + 14;
+                    const char *lbl = onCount > 0 ? "OFF" : "ON";
+                    const int tw = (int)Renderer::GetTextSize(lbl);
+                    Renderer::DrawSysString(lbl, x + (box - tw) / 2, ty, x + box, Color(0x30, 0x30, 0x30));
+                }
+            }
+            Renderer::EndFrame();
+        }
+        RebuildTable();
+    }
+
     void ItemRainSettings(MenuEntry *entry)
     {
         (void)entry;
@@ -423,31 +527,7 @@ namespace CTRPluginFramework
             }
             else if (c == 1)
             {
-                // アイテムスイッチ: 押すたびに ON/OFF
-                int sel = 0;
-                for (;;)
-                {
-                    std::vector<std::string> opts;
-                    for (int i = 0; i < kNumKinds; i++)
-                    {
-                        const std::string mark = g_kinds[i].on
-                            ? (Color(0x01, 0xE3, 0x0E) << std::string("[ON] "))
-                            : (Color(0x96, 0x96, 0x96) << std::string("[OFF]"));
-                        opts.push_back(mark + (Color(0xFF, 0xFF, 0xFF) << (std::string(" ") + g_kinds[i].name)));
-                    }
-                    opts.push_back("すべてON");
-                    opts.push_back("すべてOFF");
-                    opts.push_back("もどる");
-                    Keyboard kb("アイテムスイッチ\n押すとON/OFFが切り替わります", opts);
-                    kb.ChangeSelectedEntry(sel);
-                    int s = kb.Open();
-                    if (s < 0 || s == kNumKinds + 2) break;
-                    if (s == kNumKinds)          for (int i = 0; i < kNumKinds; i++) g_kinds[i].on = true;
-                    else if (s == kNumKinds + 1) for (int i = 0; i < kNumKinds; i++) g_kinds[i].on = false;
-                    else                         g_kinds[s].on = !g_kinds[s].on;
-                    sel = s;
-                }
-                RebuildTable();
+                ItemSwitchScreen();
             }
             else if (c == 2)
             {

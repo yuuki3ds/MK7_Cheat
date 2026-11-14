@@ -32,7 +32,7 @@
 | 場所 | 中身 |
 | --- | --- |
 | `Sources/main.cpp` | ほぼ全エントリとメニュー構築、カラーピッカー、Plugin設定 |
-| `Sources/ItemRain.cpp` / `Includes/ItemRain.hpp` | アイテムレイン（ユーザー作、こちらで設定画面・終了処理を追加。アイテムドロップは削除済み）。降らせるボックスはコースから借り、残す数を超えたら・取られたら元の場所へ返す |
+| `Sources/ItemRain.cpp` / `Includes/ItemRain.hpp` | アイテムレイン（ユーザー作、こちらで設定画面・終了処理を追加。アイテムドロップは削除済み）。降らせるボックスはコースから借り、残す数を超えたら・取られたら元の場所へ返す。アイテムスイッチはアイコン（`Includes/ItemIcons.hpp`、ユーザー提供のスプライトシートから 32x32 で切り出し）を 4×3 で並べた1画面（十字キー＋A／タッチ、X すべてON、Y すべてOFF） |
 | `ctrpf-patch/KeyboardImpl.cpp` / `.hpp` | 日本語キーボード入りに改造した CTRPF の内部ファイル |
 | `ctrpf-patch/patch-home.sh` | CTRPF の PluginMenuHome.cpp を sed で書き換え、下画面の「Mapper」ボタンを「FTP Server」にする（Actions で実行） |
 | `Sources/FtpServer.cpp` | FTP サーバー本体（`FtpServerMenu()`、CTRPF からは弱いシンボルで呼ばれる） |
